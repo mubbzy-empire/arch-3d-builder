@@ -1,0 +1,20 @@
+{
+  "name": "archvision-backend",
+  "version": "1.0.0",
+  "description": "Arch-3d build API - blueprint/photo-to-3D analysis, AI chat design, cost estimation",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.16.0",
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^9.0.1"
+  }
+}
