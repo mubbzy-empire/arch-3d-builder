@@ -68,6 +68,141 @@ Keep "parts" between 3 and 65 primitives (multi-room, multi-story buildings need
 // Gemini output (never touches the hand-authored offline templates), and
 // only adds to floors the AI left essentially unplanned.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Every door/window opening is authored by the model as a small box "cut"
+// into some wall face of its floor's envelope. Smaller/faster models
+// routinely get the face-snap wrong — an opening a few centimeters off the
+// wall plane, or past a corner — which either fails to cut cleanly or reads
+// as a window floating in space / a door that clips through a corner. This
+// snaps every opening's thin (thickness) axis exactly onto the nearest
+// envelope face and clamps its position along the wall so it can never run
+// past a corner, without touching its size or which wall it was meant for.
+// ---------------------------------------------------------------------------
+function clampOpeningsToWalls(spec) {
+  const structureParts = spec.parts.filter(p => p.group === 'structure');
+  const openings = spec.parts.filter(p => p.group === 'door' || p.group === 'window');
+  if (!structureParts.length || !openings.length) return;
+
+  const floors = [...new Set(structureParts.map(p => p.floor ?? 1))];
+  floors.forEach(floorNum => {
+    const envelope = structureParts.find(p => (p.floor ?? 1) === floorNum);
+    if (!envelope || !envelope.size) return;
+    const [ew, eh, ed] = envelope.size;
+    const [ecx, ecy, ecz] = envelope.position || [0, eh / 2, 0];
+    const baseY = ecy - eh / 2;
+    const faceOffset = Math.min(0.25, Math.max(0.06, Math.min(ew, ed) * 0.02)) * 0.3 + 0.02;
+
+    openings.filter(p => (p.floor ?? 1) === floorNum).forEach(op => {
+      const [ow, oh, od] = op.size || [0.9, 1.2, 0.05];
+      let [x, y, z] = op.position || [ecx, baseY + oh / 2, ecz];
+      // Whichever local axis is thinner is the wall-thickness axis, so the
+      // OTHER axis is the one that must stay inside the footprint.
+      if (od <= ow) {
+        // Thin along Z → sits on a front/back (Z-facing) wall.
+        const margin = ow / 2 + 0.15;
+        const span = Math.max(margin, ew / 2 - margin);
+        z = (z - ecz >= 0 ? 1 : -1) * (ed / 2 + faceOffset);
+        x = Math.max(ecx - span, Math.min(ecx + span, x));
+      } else {
+        // Thin along X → sits on a side (X-facing) wall.
+        const margin = od / 2 + 0.15;
+        const span = Math.max(margin, ed / 2 - margin);
+        x = (x - ecx >= 0 ? 1 : -1) * (ew / 2 + faceOffset);
+        z = Math.max(ecz - span, Math.min(ecz + span, z));
+      }
+      // Keep the opening fully between the floor and just under the ceiling.
+      const botLimit = baseY + 0.05 + oh / 2;
+      const topLimit = baseY + eh - 0.12 - oh / 2;
+      y = Math.max(botLimit, Math.min(Math.max(botLimit, topLimit), y));
+      op.position = [x, y, z];
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// A building with no roof part on its topmost floor has nothing to hide the
+// interior behind — the person sees fully-furnished-looking rooms the
+// instant the model loads, before ever touching "Show interior". Smaller/
+// faster models sometimes drop the roof entirely on more unusual briefs
+// (e.g. a "penthouse" floor). This guarantees at least a simple hip roof
+// sized to that floor's real footprint whenever one is missing.
+// ---------------------------------------------------------------------------
+function ensureRoof(spec) {
+  const structureParts = spec.parts.filter(p => p.group === 'structure');
+  if (!structureParts.length) return;
+  const floors = [...new Set(structureParts.map(p => p.floor ?? 1))];
+  const topFloor = Math.max(...floors);
+  const hasTopRoof = spec.parts.some(p => p.group === 'roof' && (p.floor ?? topFloor) === topFloor);
+  if (hasTopRoof) return;
+
+  const envelope = structureParts.find(p => (p.floor ?? 1) === topFloor);
+  if (!envelope || !envelope.size) return;
+  const [ew, , ed] = envelope.size;
+  const [ecx, , ecz] = envelope.position || [0, 0, 0];
+  spec.parts.push({
+    type: 'cylinder',
+    radiusTop: 0.001,
+    radiusBottom: Math.max(ew, ed) * 0.6,
+    height: Math.max(0.9, Math.min(ew, ed) * 0.22),
+    position: [ecx, 0, ecz],
+    material: 'metal',
+    color: '#4d4232',
+    group: 'roof',
+    floor: topFloor,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// A floor with almost no windows, or a ground floor with no exterior door,
+// still needs to read as a real building rather than a blank box. Tops up
+// each floor to a minimum of 3 windows spread across different walls, and
+// guarantees one front door on the lowest floor, only adding what's missing
+// — never touches a floor that already has enough.
+// ---------------------------------------------------------------------------
+function ensureMinimumOpenings(spec) {
+  const structureParts = spec.parts.filter(p => p.group === 'structure');
+  if (!structureParts.length) return;
+  const floors = [...new Set(structureParts.map(p => p.floor ?? 1))].sort((a, b) => a - b);
+  const groundFloor = floors[0];
+
+  floors.forEach(floorNum => {
+    const envelope = structureParts.find(p => (p.floor ?? 1) === floorNum);
+    if (!envelope || !envelope.size) return;
+    const [ew, eh, ed] = envelope.size;
+    const [ecx, ecy, ecz] = envelope.position || [0, eh / 2, 0];
+    const baseY = ecy - eh / 2;
+    const winY = baseY + eh * 0.55;
+
+    const floorWindows = spec.parts.filter(p => p.group === 'window' && (p.floor ?? 1) === floorNum);
+    const floorDoors = spec.parts.filter(p => p.group === 'door' && (p.floor ?? 1) === floorNum);
+
+    if (floorWindows.length < 3) {
+      const ww = Math.min(1.2, ew * 0.12);
+      const wh = Math.min(1.2, eh * 0.35);
+      const anchors = [
+        { x: ecx - ew * 0.22, z: ecz + ed / 2 + 0.02, axis: 'z' },
+        { x: ecx + ew * 0.22, z: ecz + ed / 2 + 0.02, axis: 'z' },
+        { x: ecx - ew / 2 - 0.02, z: ecz - ed * 0.2, axis: 'x' },
+        { x: ecx + ew / 2 + 0.02, z: ecz + ed * 0.2, axis: 'x' },
+      ];
+      for (let i = 0; floorWindows.length + i < 3 && i < anchors.length; i++) {
+        const a = anchors[i];
+        const size = a.axis === 'z' ? [ww, wh, 0.05] : [0.05, wh, ww];
+        spec.parts.push({ type: 'box', size, position: [a.x, winY, a.z], material: 'glass', group: 'window', floor: floorNum });
+      }
+    }
+
+    if (floorNum === groundFloor && floorDoors.length === 0) {
+      const dh = Math.min(2.05, eh * 0.7);
+      spec.parts.push({
+        type: 'box', size: [0.9, dh, 0.05],
+        position: [ecx, baseY + dh / 2, ecz + ed / 2 + 0.02],
+        material: 'wood', color: '#6b4a2f', group: 'door', floor: floorNum,
+      });
+    }
+  });
+}
+
 function reinforceDesign(result) {
   const spec = result?.modelSpec;
   if (!spec || !Array.isArray(spec.parts) || !spec.parts.length) return result;
@@ -82,6 +217,14 @@ function reinforceDesign(result) {
 
   const isBuildingLike = spec.parts.some(p => p.group === 'door' || p.group === 'window');
   if (!isBuildingLike) return result;
+
+  // Fix up whatever openings the model did supply — snapped onto real wall
+  // faces and kept clear of corners — before topping up any that are missing
+  // and guaranteeing a roof, all ahead of the interior-partition fallback
+  // below so partition walls are planned against the final envelope set.
+  clampOpeningsToWalls(spec);
+  ensureMinimumOpenings(spec);
+  ensureRoof(spec);
 
   const floors = [...new Set(spec.parts.filter(p => p.group === 'structure').map(p => p.floor ?? 1))];
   let addedAny = false;
@@ -99,7 +242,11 @@ function reinforceDesign(result) {
     const [cx, cy, cz] = envelope.position || [0, h / 2, 0];
     const baseY = cy - h / 2;
     const thickness = 0.08;
-    const wallH = h * 0.85;
+    // Full floor-to-ceiling partitions (minus a hair of clearance at the
+    // slab and ceiling line) — the old 0.85x height left partitions visibly
+    // short of the ceiling, which is what made them read as "dividers"
+    // rather than real walls.
+    const wallH = Math.max(0.4, h - 0.2);
     const wallY = baseY + wallH / 2;
 
     const area = w * d;
