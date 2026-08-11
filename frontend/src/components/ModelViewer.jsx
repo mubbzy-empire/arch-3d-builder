@@ -5,6 +5,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GROUP_LABELS, getShadowTexture, buildBuildingMeshes, buildManualMeshes } from '../three/buildParts';
+import { applySkyBackground, buildOutdoorGround, addDaylight } from '../three/skyEnvironment';
 import PartInfoPanel from './PartInfoPanel';
 
 export default function ModelViewer({ modelSpec, title }) {
@@ -28,6 +29,8 @@ export default function ModelViewer({ modelSpec, title }) {
   const groupRef = useRef(null);
   const editModeRef = useRef(false);
   const transformModeRef = useRef('translate');
+  const interiorFillRef = useRef(null);
+  const gridRef = useRef(null);
 
   const parts = modelSpec?.parts || [];
   const hasRoof = parts.some(p => p.group === 'roof');
@@ -96,17 +99,6 @@ export default function ModelViewer({ modelSpec, title }) {
       controls.enableDamping = true;
       controls.dampingFactor = 0.08;
 
-      const key = new THREE.DirectionalLight(0xffffff, 1.2);
-      key.position.set(3, 5, 2);
-      key.castShadow = true;
-      key.shadow.mapSize.set(1024, 1024);
-      key.shadow.radius = 3;
-      scene.add(key);
-      const fill = new THREE.DirectionalLight(0x88aacc, 0.3);
-      fill.position.set(-3, 2, -2);
-      scene.add(fill);
-      scene.add(new THREE.AmbientLight(0x404850, 0.5));
-
       const group = new THREE.Group();
       groupRef.current = group;
       const inputParts = parts.length ? parts : [{ type: 'box', size: [1, 1, 1], position: [0, 0.5, 0], material: 'wood', group: 'structure' }];
@@ -137,6 +129,26 @@ export default function ModelViewer({ modelSpec, title }) {
       const maxDim = Math.max(size.x, size.y, size.z, 0.2);
       const radius = maxDim / 2;
 
+      // Outdoor daylight rendering context — sky backdrop, sun + sky-bounce
+      // light, and a grass/paving ground sized to this model, so a single
+      // building preview reads as a real outdoor photo instead of a part
+      // floating in a void. Purely presentational: no part geometry or
+      // material tables (buildParts.js) are touched.
+      applySkyBackground(scene, { near: Math.max(radius * 3, 4), far: Math.max(radius * 24, 60) });
+      addDaylight(scene, { span: Math.max(radius * 2.5, 6) });
+      const ground = buildOutdoorGround(Math.max(radius * 10, 12), Math.max(radius * 10, 12));
+      ground.position.set(center.x, box.min.y - 0.001, center.z);
+      scene.add(ground);
+
+      // Soft interior fill light: off while the roof is on, brought up when
+      // "Show interior" is toggled so rooms read clearly instead of relying
+      // on the sun alone (which can leave far walls dark once the roof is
+      // gone). Toggled in the hideRoof effect below.
+      const interiorFill = new THREE.PointLight(0xfff1d6, 0, Math.max(radius * 6, 10));
+      interiorFill.position.set(center.x, center.y + Math.max(radius * 1.4, 2), center.z);
+      scene.add(interiorFill);
+      interiorFillRef.current = interiorFill;
+
       camera.near = Math.max(radius / 500, 0.01);
       camera.far = radius * 60 + 100;
       camera.updateProjectionMatrix();
@@ -150,8 +162,10 @@ export default function ModelViewer({ modelSpec, title }) {
 
       const gridSize = Math.max(maxDim * 2.5, 4);
       const grid = new THREE.GridHelper(gridSize, 24, 0x3a4048, 0x1c2027);
-      grid.position.y = box.min.y;
+      grid.position.y = box.min.y + 0.002;
+      grid.visible = editModeRef.current;
       scene.add(grid);
+      gridRef.current = grid;
 
       const shadowDisc = new THREE.Mesh(
         new THREE.PlaneGeometry(maxDim * 1.6, maxDim * 1.6),
@@ -246,6 +260,7 @@ export default function ModelViewer({ modelSpec, title }) {
         scene.environment?.dispose?.();
         shadowDisc.geometry.dispose();
         shadowDisc.material.dispose();
+        ground.children.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); });
         meshes.forEach(m => { m.geometry.dispose(); m.material.dispose(); });
         if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
       };
@@ -263,6 +278,7 @@ export default function ModelViewer({ modelSpec, title }) {
 
   useEffect(() => {
     meshesRef.current.forEach(m => { if (m.userData.group === 'roof') m.visible = !hideRoof; });
+    if (interiorFillRef.current) interiorFillRef.current.intensity = hideRoof ? 1.2 : 0;
   }, [hideRoof, modelSpec]);
 
   useEffect(() => {
@@ -278,6 +294,7 @@ export default function ModelViewer({ modelSpec, title }) {
       transformRef.current.enabled = false;
       transformRef.current.visible = false;
     }
+    if (gridRef.current) gridRef.current.visible = editMode;
   }, [editMode]);
 
   const resetPositions = () => {

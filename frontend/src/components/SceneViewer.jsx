@@ -5,6 +5,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GROUP_LABELS, getShadowTexture, buildBuildingMeshes } from '../three/buildParts';
+import { applySkyBackground, buildOutdoorGround, addDaylight } from '../three/skyEnvironment';
 import PartInfoPanel from './PartInfoPanel';
 
 // Renders an entire estate/compound: a ground plane sized to the site, a
@@ -33,11 +34,15 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
   const layoutEditModeRef = useRef(false);
   const transformModeRef = useRef('translate');
   const groupRootRef = useRef(null);
+  const gridRef = useRef(null);
 
   const siteWidth = site?.width || 60;
   const siteDepth = site?.depth || 60;
 
-  useEffect(() => { layoutEditModeRef.current = layoutEditMode; }, [layoutEditMode]);
+  useEffect(() => {
+    layoutEditModeRef.current = layoutEditMode;
+    if (gridRef.current) gridRef.current.visible = layoutEditMode;
+  }, [layoutEditMode]);
   useEffect(() => {
     transformModeRef.current = transformMode;
     if (transformRef.current) {
@@ -81,30 +86,25 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
       controls.dampingFactor = 0.08;
       controlsRef.current = controls;
 
-      const key = new THREE.DirectionalLight(0xffffff, 1.3);
-      key.position.set(20, 30, 15);
-      key.castShadow = true;
-      key.shadow.mapSize.set(2048, 2048);
-      key.shadow.camera.left = -siteWidth;
-      key.shadow.camera.right = siteWidth;
-      key.shadow.camera.top = siteDepth;
-      key.shadow.camera.bottom = -siteDepth;
-      scene.add(key);
-      scene.add(new THREE.DirectionalLight(0x88aacc, 0.25));
-      scene.add(new THREE.AmbientLight(0x40454e, 0.55));
+      // Outdoor daylight rendering context — sky backdrop, sun + sky-bounce
+      // light, and a grass/paving ground sized to the site — so the estate
+      // reads as a real elevation photo instead of a dark technical
+      // viewport. Purely presentational: buildBuildingMeshes()/buildParts.js
+      // (the modeler's geometry + materials) are untouched.
+      applySkyBackground(scene, { near: Math.max(siteWidth, siteDepth) * 1.2, far: Math.max(siteWidth, siteDepth) * 6 });
+      addDaylight(scene, { span: Math.max(siteWidth, siteDepth) });
 
-      // Site ground plane
-      const ground = new THREE.Mesh(
-        new THREE.PlaneGeometry(siteWidth, siteDepth),
-        new THREE.MeshStandardMaterial({ color: 0x2a3128, roughness: 1 })
-      );
-      ground.rotation.x = -Math.PI / 2;
-      ground.receiveShadow = true;
+      const ground = buildOutdoorGround(siteWidth, siteDepth);
       scene.add(ground);
 
+      // Plot/road grid — a technical aid for "Edit layout" mode, hidden the
+      // rest of the time so it doesn't sit on top of the paved/grass ground
+      // and break the realism of the default view.
       const grid = new THREE.GridHelper(Math.max(siteWidth, siteDepth), 20, 0x40484f, 0x252b31);
       grid.position.y = 0.01;
+      grid.visible = layoutEditModeRef.current;
       scene.add(grid);
+      gridRef.current = grid;
 
       const root = new THREE.Group();
       groupRootRef.current = root;
@@ -237,6 +237,7 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         controls.dispose();
         renderer.dispose();
         scene.environment?.dispose?.();
+        ground.children.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); });
         buildingGroups.forEach(g => g.children.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); }));
         if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
       };

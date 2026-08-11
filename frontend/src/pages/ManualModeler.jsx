@@ -5,6 +5,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildManualMeshes, getShadowTexture } from '../three/buildParts';
+import { drawBlueprint } from '../three/blueprint';
+import { analyzeBlueprint } from '../api/client';
 
 let idCounter = 0;
 const genId = () => `p${Date.now().toString(36)}${(idCounter++).toString(36)}`;
@@ -56,6 +58,12 @@ export default function ManualModeler() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [buildError, setBuildError] = useState(null);
+
+  const [blueprintOpen, setBlueprintOpen] = useState(false);
+  const [blueprintStats, setBlueprintStats] = useState(null);
+  const [blueprintAnalyzing, setBlueprintAnalyzing] = useState(false);
+  const [blueprintError, setBlueprintError] = useState(null);
+  const blueprintCanvasRef = useRef(null);
 
   const partsRef = useRef(editor.parts);
   const toolRef = useRef(tool);
@@ -421,6 +429,53 @@ export default function ManualModeler() {
     }
   }, [tool, selectedId]);
 
+  // Redraw the 2D blueprint whenever the modal opens or the design changes
+  // while it's open, so it always reflects the current scene.
+  useEffect(() => {
+    if (!blueprintOpen) return;
+    const canvas = blueprintCanvasRef.current;
+    if (!canvas) return;
+    try {
+      const stats = drawBlueprint(canvas, editor.parts, { title });
+      setBlueprintStats(stats);
+    } catch (err) {
+      console.error('Blueprint generation failed:', err);
+    }
+  }, [blueprintOpen, editor.parts, title]);
+
+  const downloadBlueprint = () => {
+    const canvas = blueprintCanvasRef.current;
+    if (!canvas) return;
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${title.replace(/\s+/g, '-').toLowerCase() || 'blueprint'}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, 'image/png', 0.95);
+  };
+
+  const analyzeGeneratedBlueprint = () => {
+    const canvas = blueprintCanvasRef.current;
+    if (!canvas) return;
+    setBlueprintAnalyzing(true);
+    setBlueprintError(null);
+    canvas.toBlob(async (blob) => {
+      if (!blob) { setBlueprintAnalyzing(false); return; }
+      try {
+        const file = new File([blob], `${title || 'blueprint'}.png`, { type: 'image/png' });
+        const result = await analyzeBlueprint(file, `This blueprint was exported from a hand-built 3D design titled "${title}" — read it back and reconstruct it as accurately as possible.`);
+        navigate('/results', { state: { result } });
+      } catch (err) {
+        setBlueprintError(err.message || 'Could not analyze the generated blueprint.');
+      } finally {
+        setBlueprintAnalyzing(false);
+      }
+    }, 'image/png', 0.95);
+  };
+
   const saveDesign = async () => {
     setSaving(true);
     setSaveError(null);
@@ -546,12 +601,40 @@ export default function ManualModeler() {
             <div className="section-head"><h3>Save design</h3></div>
             <input type="text" placeholder="Design title" value={title} onChange={e => setTitle(e.target.value)} style={{ marginBottom: 10 }} />
             {saveError && <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 10 }}>{saveError}</p>}
-            <button className="btn btn-primary btn-block" disabled={!editor.parts.length || saving} onClick={saveDesign}>
+            <button className="btn btn-primary btn-block" disabled={!editor.parts.length || saving} onClick={saveDesign} style={{ marginBottom: 8 }}>
               {saving ? 'Saving…' : 'Save & view'}
+            </button>
+            <button className="btn btn-secondary btn-block" disabled={!editor.parts.length} onClick={() => setBlueprintOpen(true)}>
+              Generate blueprint
             </button>
           </div>
         </div>
       </div>
+
+      {blueprintOpen && (
+        <div className="modal-overlay" onClick={() => setBlueprintOpen(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="section-head"><h3>Blueprint — {title}</h3></div>
+            <div className="blueprint-preview">
+              <canvas ref={blueprintCanvasRef} style={{ width: '100%', height: 420 }} />
+            </div>
+            {blueprintStats && (
+              <p className="page-sub" style={{ fontSize: 12.5, marginTop: 10 }}>
+                {blueprintStats.wallCount} walls · {blueprintStats.doorCount} doors · {blueprintStats.windowCount} windows
+                {blueprintStats.objectCount ? ` · ${blueprintStats.objectCount} freestanding objects (shown dashed)` : ''}
+              </p>
+            )}
+            {blueprintError && <p style={{ color: 'var(--danger)', fontSize: 13, marginTop: 10 }}>{blueprintError}</p>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={downloadBlueprint}>Download PNG</button>
+              <button className="btn btn-secondary" style={{ flex: 1 }} disabled={blueprintAnalyzing} onClick={analyzeGeneratedBlueprint}>
+                {blueprintAnalyzing ? 'Analyzing…' : 'Re-analyze with AI'}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setBlueprintOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -327,6 +327,35 @@ textarea::placeholder, input::placeholder { color: var(--text-faint); }
 .preview-frame img { display: block; width: 100%; max-height: 320px; object-fit: cover; }
 
 /* -------------------------------------------------------------------------
+   Segmented tabs (upload source switcher, etc.)
+   ------------------------------------------------------------------------- */
+
+.seg-tabs { display: flex; gap: 4px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px; }
+.seg-tab { flex: 1; text-align: center; padding: 9px 10px; border-radius: 6px; font-size: 13.5px; font-weight: 600; color: var(--text-muted); background: transparent; border: none; transition: background 140ms ease, color 140ms ease; }
+.seg-tab.active { background: var(--accent); color: #16130a; }
+
+/* -------------------------------------------------------------------------
+   Blueprint drawing canvas
+   ------------------------------------------------------------------------- */
+
+.draw-shell { position: relative; border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--border); background: #f4f1ea; touch-action: none; }
+.draw-stack { position: relative; width: 100%; height: 320px; }
+.draw-stack canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.draw-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.draw-toolbar .btn { padding: 9px 14px; font-size: 13px; }
+.draw-toolbar input[type="range"] { width: 90px; }
+.draw-toolbar .spec-label { font-size: 11.5px; white-space: nowrap; }
+
+/* -------------------------------------------------------------------------
+   Lightweight modal (blueprint preview, etc.)
+   ------------------------------------------------------------------------- */
+
+.modal-overlay { position: fixed; inset: 0; background: rgba(8, 9, 11, 0.72); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
+.modal-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px; max-width: 560px; width: 100%; max-height: 88vh; overflow-y: auto; }
+.modal-card .blueprint-preview { background: #f4f1ea; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border); }
+.modal-card .blueprint-preview img { display: block; width: 100%; height: auto; }
+
+/* -------------------------------------------------------------------------
    Loading / scan state
    ------------------------------------------------------------------------- */
 
