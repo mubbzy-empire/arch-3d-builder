@@ -233,6 +233,67 @@ export function buildBalconyMeshes(part) {
 }
 
 // ---------------------------------------------------------------------------
+// Real hip roof: four sloped rectangular planes (two trapezoids, two
+// triangular hips) meeting a ridge line, sized to a rectangular footprint.
+// Replaces the old convention of approximating a "hip roof" with a circular
+// cone (radiusTop ~0) sat on a rectangular building — a round cone over a
+// rectangular footprint overhangs unevenly at the corners and never actually
+// meets the walls cleanly, which is the single biggest reason a generated
+// building fails to read as a real house. This builds an exact match to the
+// footprint instead, with a flat ridge and consistent eave overhang all the
+// way around.
+// ---------------------------------------------------------------------------
+export function buildHipRoofMesh({ width, depth, ridgeHeight, overhang = 0.4, position, material = 'metal', color, group = 'roof', floor }) {
+  const halfW = width / 2 + overhang;
+  const halfD = depth / 2 + overhang;
+  const alongX = width >= depth;
+  const majorHalf = alongX ? halfW : halfD;
+  const minorHalf = alongX ? halfD : halfW;
+  const ridgeHalf = Math.max(majorHalf - minorHalf, Math.min(majorHalf, minorHalf) * 0.15, 0.1);
+
+  const e1 = [-halfW, 0, -halfD], e2 = [halfW, 0, -halfD], e3 = [halfW, 0, halfD], e4 = [-halfW, 0, halfD];
+  const r1 = alongX ? [-ridgeHalf, ridgeHeight, 0] : [0, ridgeHeight, -ridgeHalf];
+  const r2 = alongX ? [ridgeHalf, ridgeHeight, 0] : [0, ridgeHeight, ridgeHalf];
+
+  const tris = [];
+  const addQuad = (a, b, c, d) => tris.push(a, b, c, a, c, d);
+  const addTri = (a, b, c) => tris.push(a, b, c);
+
+  if (alongX) {
+    addQuad(e1, e2, r2, r1); // front slope (-Z)
+    addQuad(e3, e4, r1, r2); // back slope (+Z)
+    addTri(e4, e1, r1);      // left hip (-X)
+    addTri(e2, e3, r2);      // right hip (+X)
+  } else {
+    addQuad(e2, e3, r2, r1); // right slope (+X)
+    addQuad(e4, e1, r1, r2); // left slope (-X)
+    addTri(e1, e2, r1);      // front hip (-Z)
+    addTri(e3, e4, r2);      // back hip (+Z)
+  }
+
+  const positions = new Float32Array(tris.length * 3);
+  tris.forEach((v, i) => { positions[i * 3] = v[0]; positions[i * 3 + 1] = v[1]; positions[i * 3 + 2] = v[2]; });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+
+  const mat = makeMaterial(material, color);
+  mat.side = THREE.DoubleSide; // robust to any face winding, since the underside is never meant to be seen anyway
+  const mesh = new THREE.Mesh(geometry, mat);
+  const [cx, cy, cz] = position;
+  mesh.position.set(cx, cy, cz);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData.group = group;
+  mesh.userData.room = null;
+  mesh.userData.material = material;
+  if (floor != null) mesh.userData.floor = floor;
+  mesh.userData.originalPosition = mesh.position.clone();
+  mesh.userData.originalRotationY = 0;
+  return mesh;
+}
+
+// ---------------------------------------------------------------------------
 // Building shell: turns a single "structure" envelope box into real hollow
 // walls with actual cut-through door/window openings, using CSG boolean
 // operations — computed locally in the browser, no external service.
@@ -490,7 +551,9 @@ export function buildBuildingMeshes(parts) {
   const openingParts = parts.filter(p => p.group === 'door' || p.group === 'window');
   const structureParts = parts.filter(p => p.group === 'structure' || !p.group);
   const interiorDoorParts = parts.filter(p => p.group === 'interior-door');
-  const otherParts = parts.filter(p => p.group && p.group !== 'structure' && p.group !== 'door' && p.group !== 'window' && p.group !== 'interior-door');
+  const otherPartsAll = parts.filter(p => p.group && p.group !== 'structure' && p.group !== 'door' && p.group !== 'window' && p.group !== 'interior-door');
+  const roofParts = otherPartsAll.filter(p => p.group === 'roof');
+  const otherParts = otherPartsAll.filter(p => p.group !== 'roof');
   const partitionWalls = otherParts.filter(p => p.group === 'interior' && isPartitionWall(p));
   const nonPartitionOther = otherParts.filter(p => !(p.group === 'interior' && isPartitionWall(p)));
 
@@ -573,6 +636,34 @@ export function buildBuildingMeshes(parts) {
     m.userData.floor = p.floor ?? 1;
     m.userData.room = p.room || null;
     meshes.push(m);
+  });
+
+  // Roofs: a "cylinder" part with a near-zero radiusTop is the encoded
+  // convention for "hip roof" used throughout the AI prompt and the offline
+  // templates — swap that cone approximation for a real hip roof matched to
+  // its floor's actual footprint. A box roof, or a genuine cylinder (equal
+  // top/bottom radius, e.g. a turret), is left as an ordinary mesh.
+  roofParts.forEach(p => {
+    const isConeConvention = p.type === 'cylinder' && (p.radiusTop ?? 0) < Math.max(0.05, (p.radiusBottom ?? 1) * 0.05);
+    if (!isConeConvention) {
+      const m = buildMesh(p);
+      m.userData.floor = p.floor ?? 1;
+      meshes.push(m);
+      return;
+    }
+    const roofFloor = p.floor ?? floorNumbers[floorNumbers.length - 1] ?? 1;
+    const envelope = structureParts.find(sp => (sp.floor ?? 1) === roofFloor) || structureParts[structureParts.length - 1];
+    const [ew, eh, ed] = envelope?.size || [(p.radiusBottom || 4) * 1.4, 3, (p.radiusBottom || 4) * 1.4];
+    const [ecx, ecy, ecz] = envelope?.position || [0, eh / 2, 0];
+    const baseY = ecy + eh / 2;
+    const overhang = Math.min(0.5, Math.max(0.3, Math.min(ew, ed) * 0.05));
+    const ridgeHeight = Math.max(0.6, p.height || 1.6);
+    const [px, , pz] = p.position || [ecx, 0, ecz];
+    meshes.push(buildHipRoofMesh({
+      width: ew, depth: ed, ridgeHeight, overhang,
+      position: [px, baseY, pz],
+      material: p.material || 'metal', color: p.color, floor: roofFloor,
+    }));
   });
 
   return meshes;
