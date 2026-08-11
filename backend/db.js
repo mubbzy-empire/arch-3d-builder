@@ -51,6 +51,40 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (project_id) REFERENCES projects(id)
   );
+
+  -- Every important change to a project's scene (single building or estate)
+  -- can be checkpointed here as a named version, independent of the live
+  -- "projects" row, so the user can restore or compare earlier states.
+  CREATE TABLE IF NOT EXISTS project_versions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    model_spec_json TEXT,
+    buildings_json TEXT,
+    site_json TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+  );
+
+  -- One row per building inside an estate/compound project, so each
+  -- building in a multi-building scene has its own stable identity,
+  -- position on the site, and independently editable geometry.
+  CREATE TABLE IF NOT EXISTS project_buildings (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    position_x REAL DEFAULT 0,
+    position_z REAL DEFAULT 0,
+    rotation REAL DEFAULT 0,
+    category TEXT,
+    summary TEXT,
+    dimensions_json TEXT,
+    materials_json TEXT,
+    model_spec_json TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+  );
 `);
 
 // Migration guards for databases created before a feature existed. Safe to
@@ -59,6 +93,13 @@ for (const stmt of [
   'ALTER TABLE projects ADD COLUMN render_image_path TEXT',
   'ALTER TABLE estimates ADD COLUMN location TEXT',
   'ALTER TABLE estimates ADD COLUMN currency TEXT',
+  // 'estate' alongside existing 'blueprint' | 'chat' source types; site_json
+  // holds site-level data (footprint size, road gap) for estate projects.
+  'ALTER TABLE projects ADD COLUMN site_json TEXT',
+  // What the AI actually read off an uploaded blueprint (rooms, doors,
+  // windows, floor count, scale notes) before it generated any geometry —
+  // stored so the "what we detected" panel survives a reload.
+  'ALTER TABLE projects ADD COLUMN detected_json TEXT',
 ]) {
   try { db.exec(stmt); } catch (e) { /* already exists */ }
 }

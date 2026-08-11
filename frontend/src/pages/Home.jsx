@@ -15,7 +15,7 @@ export default function Home() {
         <p className="page-sub" style={{ marginTop: 10 }}>
           Upload a floor plan or elevation drawing, or describe a space in chat.
           Arch-3d build returns a to-scale, editable 3D model — click any wall, roof
-          panel, door, or piece of furniture and drag it to explore the interior —
+          panel, door, or window and drag it to explore the layout —
           plus dimensions, materials, equipment, and a budget estimate.
         </p>
       </div>
@@ -31,7 +31,7 @@ export default function Home() {
 
         <div className="panel bracket" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div className="section-head" style={{ marginBottom: 0 }}><h3>Start from a description</h3></div>
-          <p className="page-sub">Describe the design in chat — the AI furnishes and colors it for you.</p>
+          <p className="page-sub">Describe the design in chat — the AI drafts and colors the architecture for you.</p>
           <button className="btn btn-secondary btn-block" onClick={() => navigate('/chat')}>Open chat</button>
         </div>
       </div>

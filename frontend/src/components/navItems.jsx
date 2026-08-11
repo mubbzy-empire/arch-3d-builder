@@ -28,6 +28,23 @@ export const NAV_ITEMS = [
     ),
   },
   {
+    to: '/modeler', label: 'Modeler',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M4 7l8-4 8 4-8 4-8-4z" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M4 7v10l8 4 8-4V7M12 11v10" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
+    to: '/estate', label: 'Estate',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M3 21h18M5 21V9l4-3 4 3v12M13 21v-7l4-3 4 3v7" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
     to: '/projects', label: 'Projects',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">

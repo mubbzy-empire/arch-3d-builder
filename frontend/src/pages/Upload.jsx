@@ -48,9 +48,9 @@ export default function Upload() {
         <div className="eyebrow">Analyzing</div>
         <div className="scan-panel">
           <div className="scan-line" />
-          <span className="scan-label">Reading dimensions &amp; drafting 3D design…</span>
+          <span className="scan-label">Reading rooms, walls, doors &amp; windows, then drafting the 3D model…</span>
         </div>
-        <p className="page-sub" style={{ textAlign: 'center' }}>This can take up to 20-30 seconds for a detailed blueprint.</p>
+        <p className="page-sub" style={{ textAlign: 'center' }}>This can take up to 30-45 seconds for a detailed blueprint — the AI reads the drawing first, then builds geometry to match.</p>
       </div>
     );
   }

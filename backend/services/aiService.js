@@ -26,7 +26,7 @@ const genAI = GEMINI_KEY ? new GoogleGenAI({ apiKey: GEMINI_KEY }) : null;
 // Shared JSON contract for a buildable design (blueprint analysis and chat
 // design both produce this same shape, with mode-specific instructions).
 // ---------------------------------------------------------------------------
-function schemaInstructions({ furnish }) {
+function schemaInstructions() {
   return `
 Respond with ONLY valid JSON (no markdown fences, no commentary) matching exactly this shape:
 {
@@ -39,21 +39,22 @@ Respond with ONLY valid JSON (no markdown fences, no commentary) matching exactl
   "steps": [ "short build step 1", "short build step 2", ... 4-6 items ],
   "modelSpec": {
     "parts": [
-      {"type":"box","size":[width,height,depth],"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior|furniture","floor":1,"room":"optional short room name e.g. 'Parlor'"},
-      {"type":"cylinder","radiusTop":r,"radiusBottom":r,"height":h,"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior|furniture","floor":1,"room":"optional short room name"}
+      {"type":"box","size":[width,height,depth],"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior|interior-door|balcony","floor":1,"room":"optional short room name e.g. 'Parlor'"},
+      {"type":"cylinder","radiusTop":r,"radiusBottom":r,"height":h,"position":[x,y,z],"material":"wood|metal|glass|fabric","color":"#hexcode (optional)","group":"structure|roof|window|door|interior","floor":1,"room":"optional short room name"}
     ]
   }
 }
 Every part needs a "group" tag:
-- "structure": the building envelope. Its own "material" must be "wood", "metal", or "fabric" — NEVER "glass", even for designs described as glassy/floor-to-ceiling windows (represent that with more/larger "window" parts instead; a glass envelope makes the whole building see-through, which is wrong). If the building is a SINGLE story, exactly ONE box for the whole envelope. If it has MULTIPLE stories/floors (e.g. described as two-story, a penthouse atop other floors, an apartment building), create ONE separate structure box PER FLOOR, each stacked at the correct height and each tagged with its own "floor" number (1 = ground floor, 2 = next floor up, etc.) — the viewer turns each floor's envelope into its own real hollow walls with door/window cutouts, and makes each floor independently selectable and draggable so a person can pull one floor away to inspect the others. Every floor needs its own full room layout (not just the ground floor). Never add separate wall boxes alongside a structure envelope — the viewer builds the walls automatically from it.
-- "roof": roof/lid/top-cover geometry on the topmost floor, its own separate part(s) so it can be toggled off.
-- "window": becomes a REAL cut-through opening with glass filling it. Width ~0.9-1.5m, height ~1-1.4m. At least 3-5 per floor across different walls for a house. Tag with the matching "floor" number of the wall it belongs to.
-- "door": becomes a REAL cut-through opening with a door panel filling it. ~0.8-1.0m wide, ~2.0-2.1m tall, base at y=0 relative to its floor. At least one exterior door on the ground floor. Tag with the matching "floor" number.
-- "interior": a floor slab per story, PLUS mandatory partition walls that physically divide the floor into distinct enclosed rooms — this is the single most important part of a good response, do not skip or minimize it. First mentally list the rooms this floor needs (a home needs, at minimum: one living/parlor room, one kitchen, one bathroom/toilet, and one bedroom per bedroom described — plus a dining area, garage, or terrace if mentioned), then output real partition wall boxes that physically separate every one of those rooms from its neighbors (walls on at least 2-3 sides per room, not a single line down the middle). A floor with fewer than (room count − 1) × 2 partition wall parts is not acceptable. Tag each with the "room" it belongs to (e.g. "Parlor", "Kitchen", "Toilet", "Bedroom 1", "Garage") and the correct "floor".
-- "furniture": ${furnish ? 'REQUIRED — furnish every room appropriately for what it is: sofa/coffee table/TV console for a living room or parlor, table and chairs for a dining room, counters/island for a kitchen, toilet/sink/tub blocks for a bathroom, bed/wardrobe/nightstand for a bedroom, workbench or storage for a garage. Give each piece a fitting "color" so the space reads as warm and professionally decorated, and tag each with the matching "room" and "floor". Add at least 3-5 furniture parts per room — a room with zero furniture is not acceptable.' : 'do not use this group — do not invent furniture that was not shown in the source material; only include structural/fixed elements actually present.'}
-The optional "color" field is a specific hex color (e.g. "#3a5f7d") you choose because it suits the design — used instead of the generic material default. Vary it thoughtfully across parts for a designed, non-monotone look. Never use gradients — one flat, considered color per part.
-Never represent the object as a single primitive. Break every object into the distinct parts a builder would actually assemble. Buildings must include one "structure" envelope per floor, a "roof" group, several "window" openings, at least one "door" opening, and genuinely room-planned "interior" + "furniture" parts as described above — never a single flat-topped box, and never a single undivided open interior for anything larger than a one-room structure. A response that just adds one or two stray divider walls without enclosing real, separate, named rooms is a failing response — plan the full room layout before writing the parts list.
-Keep "parts" between 3 and 60 primitives (furnished multi-room, multi-story buildings need the higher end — a real house/penthouse routinely needs 30-50+ parts once every room is properly walled and furnished) using meters, centered around x=0, resting on y=0 upward, with floor 1 starting at y=0 and each additional floor stacked directly on top of the one below.
+- "structure": the building envelope. Its own "material" must be "wood", "metal", or "fabric" — NEVER "glass", even for designs described as glassy/floor-to-ceiling windows (represent that with more/larger "window" parts instead; a glass envelope makes the whole building see-through, which is wrong). If the building is a SINGLE story, exactly ONE box for the whole envelope. If it has MULTIPLE stories/floors (e.g. described as two-story, a duplex, a penthouse atop other floors, an apartment building), create ONE separate structure box PER FLOOR, each stacked directly on top of the one below and each tagged with its own "floor" number (1 = ground floor, 2 = next floor up, etc.) — the viewer turns each floor's envelope into its own real hollow walls with door/window cutouts, automatically adds a string-course trim band at every floor line above the ground floor and a plinth at the base, and makes each floor independently selectable and draggable so a person can pull one floor away to inspect the others. Every floor needs its own full room layout (not just the ground floor) — a two-story building with an identical, undecorated box repeated on top is a failing response; give the upper floor(s) their own window rhythm, at least one balcony (see below), and, where it suits the brief, a slightly smaller footprint than the floor below so the massing doesn't read as one plain stacked block. Never add separate wall boxes alongside a structure envelope — the viewer builds the walls automatically from it.
+- "roof": roof/lid/top-cover geometry on the topmost floor, its own separate part(s) so it can be toggled off. Make it overhang the walls below by roughly 0.3-0.5m on every side (a roof that stops exactly at the wall line looks unfinished) and give it real pitch/height relative to the building's footprint rather than a flat lid, unless the brief specifically calls for a flat/modern roof. It is shown by default — the interior is only revealed when the person taps "Show interior" in the viewer, so never rely on the roof being hidden to make rooms visible.
+- "window": becomes a REAL cut-through opening with glass filling it, and the viewer automatically adds a frame, mullions, and a sill — you only need to size and place the glazed opening itself. Width ~0.9-1.5m, height ~1-1.4m. At least 3-5 per floor across different walls for a house, and vary sizes/placement between floors of the same building rather than repeating an identical grid on every level. Tag with the matching "floor" number of the wall it belongs to.
+- "door": becomes a REAL cut-through opening with a door panel filling it, and the viewer automatically adds a frame, threshold, and handle. ~0.8-1.0m wide, ~2.0-2.1m tall, base at y=0 relative to its floor. At least one exterior door on the ground floor. On upper floors, a wider (~1.5-1.8m) glazed door (material "glass") leading onto a balcony reads well for a duplex/multi-story design. Tag with the matching "floor" number.
+- "balcony": a projecting platform with a railing (the viewer builds the railing/balusters automatically — you only provide the slab). Use "size": [width, 0.1, depth] where width runs along the wall and depth is how far it projects outward, "position" is the slab's floor level centered on the wall it projects from, and "rotation" (radians, optional, default 0 = projects toward +Z) should match whichever exterior wall it's attached to. Any 2+ story house or duplex should have at least one balcony on an upper floor — this is one of the most distinctive features of a good multi-story design, don't skip it.
+- "interior": a floor slab per story, PLUS mandatory partition walls that physically divide the floor into distinct enclosed rooms — this is the single most important part of a good response, do not skip or minimize it. First mentally list the rooms this floor needs (a home needs, at minimum: one living/parlor room, one kitchen, one bathroom/toilet, and one bedroom per bedroom described — plus a dining area, garage, or terrace if mentioned), then output real partition wall boxes that physically separate every one of those rooms from its neighbors (walls on at least 2-3 sides per room, not a single line down the middle). A floor with fewer than (room count − 1) × 2 partition wall parts is not acceptable. Tag each with the "room" it belongs to (e.g. "Parlor", "Kitchen", "Toilet", "Bedroom 1", "Garage") and the correct "floor". Do NOT populate rooms with furniture or decor — this application models architecture only (walls, openings, floors, roof); leave every room as clean, empty, correctly-proportioned floor space. Do not use a "furniture" group at all.
+- "interior-door": a REAL cut-through doorway (with frame, threshold, and handle added automatically, same as an exterior door) inside a partition wall, so a person can actually walk from one demarcated room into the next — a floor plan where every room is sealed off with no way to reach it is a failing response. For every partition wall you add, place at least one "interior-door" roughly 0.8-0.9m wide and ~2.0m tall wherever that wall's two adjoining rooms should connect (or connect to a hallway/entry); a small home needs several of these, not just one. Position and size it exactly like an exterior "door" — the engine automatically finds and cuts it into whichever partition wall it's touching, so you don't need to reference the wall directly, just place it in the doorway location. Tag with the correct "floor".
+The optional "color" field is a specific hex color (e.g. "#3a5f7d") you choose because it suits the design — used instead of the generic material default. Vary it thoughtfully across parts for a designed, non-monotone look — for a multi-story building, giving the upper floor(s) a slightly different tone than the ground floor (a common real-world cue) reads much better than one flat color top to bottom. Never use gradients — one flat, considered color per part.
+Never represent the object as a single primitive. Break every object into the distinct parts a builder would actually assemble. Buildings must include one "structure" envelope per floor, a "roof" group, several "window" openings, at least one "door" opening, genuinely room-planned "interior" parts with connecting "interior-door" openings as described above, and (for anything 2+ stories) at least one "balcony" — never a single flat-topped box, and never a single undivided open interior for anything larger than a one-room structure. A response that just adds one or two stray divider walls without enclosing real, separate, named, DOOR-CONNECTED rooms is a failing response — plan the full room layout, including how each room is entered, before writing the parts list.
+Keep "parts" between 3 and 65 primitives (multi-room, multi-story buildings need the higher end — a real house routinely needs 25-45+ parts once every room is properly walled and connected with doorways) using meters, centered around x=0, resting on y=0 upward, with floor 1 starting at y=0 and each additional floor stacked directly on top of the one below.
 `.trim();
 }
 
@@ -61,17 +62,20 @@ Keep "parts" between 3 and 60 primitives (furnished multi-room, multi-story buil
 // Deterministic safety net: if the model still returns a sparse, barely
 // partitioned interior despite the instructions above (smaller/faster free
 // models sometimes under-deliver on complex structured output), fill in a
-// simple room grid and, for furnished designs, basic furniture — so the
-// viewer always shows real room demarcation rather than one open box. Only
-// runs for live Gemini output (never touches the hand-authored offline
-// templates), and only adds to floors the AI left essentially unplanned.
+// simple room grid so the viewer always shows real room demarcation rather
+// than one open box. This app models architecture only — clean, empty,
+// correctly-proportioned rooms — never furniture/decor. Only runs for live
+// Gemini output (never touches the hand-authored offline templates), and
+// only adds to floors the AI left essentially unplanned.
 // ---------------------------------------------------------------------------
-function reinforceDesign(result, { furnish }) {
+function reinforceDesign(result) {
   const spec = result?.modelSpec;
   if (!spec || !Array.isArray(spec.parts) || !spec.parts.length) return result;
 
   // Belt-and-suspenders: never let the envelope itself be glass, even if
-  // the prompt instruction above gets ignored.
+  // the prompt instruction above gets ignored. Also strip any "furniture"
+  // group the model might still emit — this app is architecture-only.
+  spec.parts = spec.parts.filter(p => p.group !== 'furniture');
   spec.parts.forEach(p => {
     if (p.group === 'structure' && p.material === 'glass') p.material = 'wood';
   });
@@ -80,8 +84,6 @@ function reinforceDesign(result, { furnish }) {
   if (!isBuildingLike) return result;
 
   const floors = [...new Set(spec.parts.filter(p => p.group === 'structure').map(p => p.floor ?? 1))];
-  const palette = ['#8a6d5c', '#5c7a6d', '#7a5230', '#6d5c8a', '#a08a5c', '#5c8a76'];
-  let paletteIdx = 0;
   let addedAny = false;
 
   floors.forEach(floorNum => {
@@ -109,29 +111,14 @@ function reinforceDesign(result, { furnish }) {
     for (let c = 1; c < cols; c++) {
       const x = cx - w / 2 + colW * c;
       spec.parts.push({ type: 'box', size: [thickness, wallH, d], position: [x, wallY, cz], material: 'wood', color: '#d8cdb8', group: 'interior', room: 'auto', floor: floorNum });
+      spec.parts.push({ type: 'box', size: [0.85, 2.0, thickness * 3], position: [x, baseY + 1.0, cz - d / 2 + d * 0.3], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: floorNum });
       addedAny = true;
     }
     for (let r = 1; r < rows; r++) {
       const z = cz - d / 2 + rowD * r;
       spec.parts.push({ type: 'box', size: [w, wallH, thickness], position: [cx, wallY, z], material: 'wood', color: '#d8cdb8', group: 'interior', room: 'auto', floor: floorNum });
+      spec.parts.push({ type: 'box', size: [0.85, 2.0, thickness * 3], position: [cx - w / 2 + w * 0.3, baseY + 1.0, z], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: floorNum });
       addedAny = true;
-    }
-
-    if (furnish) {
-      let idx = 0;
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          idx++;
-          const roomCx = cx - w / 2 + colW * (c + 0.5);
-          const roomCz = cz - d / 2 + rowD * (r + 0.5);
-          const fw = Math.min(colW, rowD) * 0.3;
-          spec.parts.push({
-            type: 'box', size: [fw, 0.45, fw * 1.4], position: [roomCx, baseY + 0.23, roomCz],
-            material: 'fabric', color: palette[paletteIdx++ % palette.length],
-            group: 'furniture', room: `Room ${idx}`, floor: floorNum,
-          });
-        }
-      }
     }
   });
 
@@ -153,6 +140,70 @@ async function callGemini(parts, { json = true } = {}) {
 
 function stripFences(text) {
   return text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+}
+
+// ---------------------------------------------------------------------------
+// Blueprint reading, stage 1: look at the drawing and say what's actually on
+// it — before any 3D geometry gets generated. This is a separate Gemini call
+// from geometry generation on purpose: asking the model to identify rooms,
+// walls, doors, and windows as its own discrete task (rather than folding
+// "read the drawing" and "invent 3D coordinates" into one prompt) makes it
+// actually look at the image instead of pattern-matching to a generic house,
+// and gives the person a legible record of what the AI recognized — which
+// they can sanity-check against the drawing before trusting the 3D result.
+// ---------------------------------------------------------------------------
+function detectionInstructions() {
+  return `
+Look carefully at this architectural drawing or photo and identify what is actually shown — this is a reading task, not a design task, so describe only what you can actually see or reasonably infer from it, and say when something is unclear rather than guessing confidently. Respond with ONLY valid JSON (no markdown fences, no commentary) in exactly this shape:
+{
+  "floors": number of distinct stories/levels this drawing shows or clearly implies (1 if it's a single floor plan or a single-story photo),
+  "scaleNote": "quote any scale indicator or dimension labels you can actually read off the drawing (e.g. 'scale marked 1:100', 'Living Room labeled 4.2m x 5.0m'), or state plainly 'no scale or dimensions marked — proportions will be estimated from typical room sizes' if none are visible",
+  "rooms": [ { "name": "the room's label exactly as written on the drawing, or a reasonable name if unlabeled (e.g. 'Bedroom 2')", "floor": 1, "notes": "what you can tell about its approximate size or position from the drawing" } ],
+  "walls": { "exterior": approximate count of distinct exterior wall segments you can see, "interior": approximate count of distinct interior partition walls, "notes": "wall thickness if marked, construction type if indicated" },
+  "doors": [ { "location": "a specific description of where this door is, e.g. 'main entrance on the south/front wall' or 'connecting the Kitchen and Dining Room'", "floor": 1 } ],
+  "windows": [ { "location": "a specific description of where this window is, e.g. 'two windows on the east wall of the Living Room'", "floor": 1 } ],
+  "stairs": true or false — whether a staircase is visible or implied,
+  "uncertain": [ "brief notes on any part of the drawing that is unclear, illegible, cut off, or ambiguous" ]
+}
+List EVERY room, door, and window you can actually identify in the drawing — do not skip any to save space, and do not invent ones you can't see just to look thorough. If the image is a photo of a finished building rather than a plan, infer floors/openings/likely room layout from what's visible on the exterior and say so in "uncertain".
+`.trim();
+}
+
+async function detectBlueprintElements({ base64, mimeType, notes }) {
+  const parts = [
+    { text: `You are a professional architect's assistant reading an uploaded architectural drawing. ${notes ? `The architect adds this context: ${notes}.` : ''}\n${detectionInstructions()}` },
+    { inlineData: { mimeType, data: base64 } },
+  ];
+  const text = await callGemini(parts);
+  const detected = JSON.parse(stripFences(text));
+  detected.source = 'read';
+  return detected;
+}
+
+// Builds a plausible "what we detected" record when there's no live AI to
+// actually read the image with — derived from whichever offline template
+// got selected, and clearly labeled as not a real reading of the uploaded
+// file, so the panel never implies the offline engine looked at the image.
+function detectedFromOffline(tpl) {
+  const modelParts = tpl.modelSpec.parts;
+  const floors = [...new Set(modelParts.filter(p => p.group === 'structure').map(p => p.floor ?? 1))];
+  const namedRooms = modelParts.filter(p => p.group === 'interior' && p.room && p.room !== 'auto');
+  const doorCount = modelParts.filter(p => p.group === 'door').length;
+  const interiorDoorCount = modelParts.filter(p => p.group === 'interior-door').length;
+  const windowCount = modelParts.filter(p => p.group === 'window').length;
+  return {
+    source: 'offline',
+    floors: floors.length || 1,
+    scaleNote: 'No live AI connection was available, so this drawing was not actually read — a standard offline template was used instead.',
+    rooms: namedRooms.length
+      ? namedRooms.map(p => ({ name: p.room, floor: p.floor ?? 1, notes: 'from the offline template, not read from your drawing' }))
+      : [{ name: 'Open interior', floor: 1, notes: 'estimated' }],
+    walls: { exterior: 4, interior: modelParts.filter(p => p.group === 'interior' && p.size && Math.min(p.size[0], p.size[2]) < 0.3).length, notes: 'estimated' },
+    doors: Array.from({ length: doorCount + interiorDoorCount }, (_, i) => ({ location: `Doorway ${i + 1} (estimated)`, floor: 1 })),
+    windows: Array.from({ length: windowCount }, (_, i) => ({ location: `Window ${i + 1} (estimated)`, floor: 1 })),
+    stairs: floors.length > 1,
+    uncertain: ['This project ran on the offline engine — connect a Gemini API key for the AI to actually read your uploaded drawing.'],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +376,7 @@ const TEMPLATES = {
   },
   house: {
     title: 'Three-Bedroom House', category: 'house',
-    summary: 'A single-story, three-bedroom home with a hip roof, exterior windows, a front door, and a furnished interior layout, viewable once the roof is toggled off.',
+    summary: 'A single-story, three-bedroom home with a hip roof, exterior windows, a front door, and a fully room-partitioned interior layout, viewable once the roof is toggled off.',
     dimensions: [ { label: 'Height (to roof peak)', value: '5.00 m' }, { label: 'Width', value: '10.00 m' }, { label: 'Depth', value: '8.00 m' } ],
     materials: [
       { name: 'Concrete slab foundation', purpose: 'base structure' },
@@ -361,9 +412,69 @@ const TEMPLATES = {
       { type: 'box', size: [9.6, 0.05, 7.6], position: [0, 0.03, 0], material: 'wood', color: '#c9b28a', group: 'interior' },
       { type: 'box', size: [0.05, 3.0, 7.6], position: [-2, 1.6, 0], material: 'wood', group: 'interior' },
       { type: 'box', size: [0.05, 3.0, 7.6], position: [2, 1.6, 0], material: 'wood', group: 'interior' },
-      { type: 'box', size: [1.6, 0.5, 2.0], position: [-3.5, 0.28, 2.5], material: 'fabric', color: '#8a6d5c', group: 'furniture' },
-      { type: 'box', size: [1.2, 0.75, 0.7], position: [3.5, 0.4, -3], material: 'wood', color: '#7a5230', group: 'furniture' },
-      { type: 'box', size: [1.8, 0.45, 0.9], position: [-3.5, 0.23, -3], material: 'fabric', color: '#5c7a6d', group: 'furniture' },
+      { type: 'box', size: [0.85, 2.0, 0.15], position: [-2, 1.025, -2.5], material: 'wood', color: '#6b4a2f', group: 'interior-door' },
+      { type: 'box', size: [0.85, 2.0, 0.15], position: [2, 1.025, 1.5], material: 'wood', color: '#6b4a2f', group: 'interior-door' },
+    ] },
+  },
+  duplex: {
+    title: 'Two-Story Duplex', category: 'house',
+    summary: 'A two-story, four-bedroom duplex — a distinct ground-floor footprint with living areas and a kitchen, a bedroom floor above with a front balcony, and its own roofline, string-course trim between floors, and a fully room-partitioned interior on both levels.',
+    dimensions: [ { label: 'Height (to roof peak)', value: '8.10 m' }, { label: 'Width', value: '10.00 m' }, { label: 'Depth', value: '8.00 m' } ],
+    materials: [
+      { name: 'Reinforced concrete slab & footing', purpose: 'foundation for a two-story load' },
+      { name: '2x6 in timber wall framing', purpose: 'load-bearing walls, both floors' },
+      { name: 'Fiber-cement exterior siding', purpose: 'weatherproof cladding' },
+      { name: 'Asphalt shingle roofing', purpose: 'roof weatherproofing' },
+      { name: 'Double-glazed vinyl windows', purpose: 'natural light, insulation' },
+      { name: 'Powder-coated steel balcony railing', purpose: 'upper-floor balcony' },
+      { name: 'Drywall interior partitions', purpose: 'room division, both floors' },
+    ],
+    equipment: [
+      { name: 'Concrete mixer & pump', note: 'foundation pour' },
+      { name: 'Framing nailer', note: 'wall and roof framing' },
+      { name: 'Circular saw', note: 'lumber cuts' },
+      { name: 'Scaffolding tower', note: 'second-floor and roof work' },
+      { name: 'Level & laser level', note: 'square, plumb walls across both floors' },
+    ],
+    steps: [
+      'Pour and cure the reinforced concrete slab and footing.',
+      'Frame and raise ground-floor exterior walls, then interior partitions.',
+      'Install the first-floor deck and frame the upper-floor walls on top.',
+      'Frame and sheath the roof; build out the front balcony structure and railing.',
+      'Install windows, doors (including the upper-floor balcony door), and exterior siding.',
+      'Apply roofing shingles and finish exterior trim.',
+      'Complete interior drywall and finish work on both floors.',
+    ],
+    modelSpec: { parts: [
+      // Ground floor (y 0 → 3)
+      { type: 'box', size: [10, 3, 8], position: [0, 1.5, 0], material: 'wood', color: '#c9b28a', group: 'structure', floor: 1 },
+      { type: 'box', size: [1.2, 1.3, 0.05], position: [-3.3, 1.55, 4.02], material: 'glass', group: 'window', floor: 1 },
+      { type: 'box', size: [1.2, 1.3, 0.05], position: [1.7, 1.55, 4.02], material: 'glass', group: 'window', floor: 1 },
+      { type: 'box', size: [0.05, 1.3, 1.3], position: [-5.02, 1.55, -1.2], material: 'glass', group: 'window', floor: 1 },
+      { type: 'box', size: [0.05, 1.3, 1.3], position: [5.02, 1.55, 1.6], material: 'glass', group: 'window', floor: 1 },
+      { type: 'box', size: [1.3, 1.3, 0.05], position: [0, 1.55, -4.02], material: 'glass', group: 'window', floor: 1 },
+      { type: 'box', size: [0.95, 2.05, 0.05], position: [-0.9, 1.025, 4.02], material: 'wood', color: '#6b4a2f', group: 'door', floor: 1 },
+      { type: 'box', size: [9.6, 0.05, 7.6], position: [0, 0.03, 0], material: 'wood', color: '#c9b28a', group: 'interior', floor: 1 },
+      { type: 'box', size: [0.06, 2.8, 7.6], position: [-1.5, 1.43, 0], material: 'wood', color: '#d8cdb8', group: 'interior', floor: 1, room: 'Living Room' },
+      { type: 'box', size: [6.5, 2.8, 0.06], position: [1.75, 1.43, 1.5], material: 'wood', color: '#d8cdb8', group: 'interior', floor: 1, room: 'Kitchen' },
+      { type: 'box', size: [0.85, 2.0, 0.15], position: [-1.5, 1.0, 2.0], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: 1 },
+      { type: 'box', size: [0.85, 2.0, 0.15], position: [0.0, 1.0, 1.5], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: 1 },
+      // Upper floor (y 3 → 6) — same footprint, own openings, own trim tone
+      { type: 'box', size: [10, 3, 8], position: [0, 4.5, 0], material: 'wood', color: '#e3d8c1', group: 'structure', floor: 2 },
+      { type: 'box', size: [1.1, 1.2, 0.05], position: [-3.6, 4.5, 4.02], material: 'glass', group: 'window', floor: 2 },
+      { type: 'box', size: [1.1, 1.2, 0.05], position: [3.0, 4.5, 4.02], material: 'glass', group: 'window', floor: 2 },
+      { type: 'box', size: [0.05, 1.2, 1.2], position: [-5.02, 4.5, -1.6], material: 'glass', group: 'window', floor: 2 },
+      { type: 'box', size: [0.05, 1.2, 1.2], position: [5.02, 4.5, 1.8], material: 'glass', group: 'window', floor: 2 },
+      { type: 'box', size: [1.2, 1.2, 0.05], position: [0.2, 4.5, -4.02], material: 'glass', group: 'window', floor: 2 },
+      { type: 'box', size: [1.6, 2.05, 0.05], position: [-0.4, 4.025, 4.02], material: 'glass', color: '#bcdfe6', group: 'door', floor: 2 },
+      { type: 'box', size: [3.2, 1.0, 1.3], position: [-0.4, 3.0, 4.02], material: 'wood', color: '#c9b28a', group: 'balcony', floor: 2 },
+      { type: 'box', size: [9.6, 0.05, 7.6], position: [0, 3.03, 0], material: 'wood', color: '#e3d8c1', group: 'interior', floor: 2 },
+      { type: 'box', size: [0.06, 2.8, 7.6], position: [0.3, 4.43, 0], material: 'wood', color: '#ede4d0', group: 'interior', floor: 2, room: 'Bedroom 1' },
+      { type: 'box', size: [4.7, 2.8, 0.06], position: [2.65, 4.43, 0], material: 'wood', color: '#ede4d0', group: 'interior', floor: 2, room: 'Bedroom 2' },
+      { type: 'box', size: [0.85, 2.0, 0.15], position: [0.3, 4.0, -2.0], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: 2 },
+      { type: 'box', size: [0.85, 2.0, 0.15], position: [1.0, 4.0, 0.0], material: 'wood', color: '#6b4a2f', group: 'interior-door', floor: 2 },
+      // Roof atop the upper floor
+      { type: 'cylinder', radiusTop: 0.001, radiusBottom: 7.3, height: 2.1, position: [0, 7.05, 0], material: 'metal', color: '#4d4232', group: 'roof', floor: 2 },
     ] },
   },
 };
@@ -373,7 +484,8 @@ const KEYWORD_MAP = [
   { cat: 'shelving', words: ['shelf', 'shelving', 'bookcase', 'rack'] },
   { cat: 'seating', words: ['bench', 'chair', 'seat', 'stool'] },
   { cat: 'cabinet', words: ['cabinet', 'cupboard', 'closet', 'wardrobe', 'drawer'] },
-  { cat: 'house', words: ['house', 'home', 'bungalow', 'cottage', 'bedroom', 'apartment', 'duplex', 'floor plan', 'blueprint'] },
+  { cat: 'duplex', words: ['duplex', 'two-story', 'two story', '2-story', '2 story', 'two-storey', 'two storey', '2-storey', '2 storey', 'multi-story', 'multi-storey', 'multistory', 'multistorey', 'storey building', 'story building', 'upstairs', 'penthouse', 'second floor', 'first floor and second', 'triplex'] },
+  { cat: 'house', words: ['house', 'home', 'bungalow', 'cottage', 'bedroom', 'apartment', 'floor plan', 'blueprint'] },
   { cat: 'outdoor-structure', words: ['shed', 'deck', 'pergola', 'fence', 'gazebo', 'coop', 'barn'] },
   { cat: 'frame', words: ['frame', 'stand', 'mount', 'bracket'] },
 ];
@@ -394,7 +506,7 @@ function offlineDesign(hintText, fileName) {
 
 function offlineChatReply(message) {
   const result = offlineDesign(message, '');
-  const reply = `Here's a concept for "${result.title}" based on what you described — dimensions, materials, equipment, and a furnished 3D preview on the right. Tell me what to change (room count, size, style, colors) and I'll refine it.`;
+  const reply = `Here's a concept for "${result.title}" based on what you described — dimensions, materials, equipment, and an editable 3D preview on the right. Tell me what to change (room count, size, style, colors) and I'll refine it.`;
   return { reply, result };
 }
 
@@ -404,20 +516,30 @@ function offlineChatReply(message) {
 
 async function analyzeBlueprint({ base64, mimeType, fileName, notes }) {
   if (genAI) {
+    let detected = null;
     try {
+      detected = await detectBlueprintElements({ base64, mimeType, notes });
+    } catch (err) {
+      console.error('Blueprint element detection failed, generating without a grounded reading:', err.message);
+    }
+
+    try {
+      const groundedText = detected
+        ? `You are a professional architect's assistant. You already read this exact drawing and identified the following elements on it:\n${JSON.stringify(detected)}\nNow reconstruct it as an accurate to-scale 3D design that matches EXACTLY what you identified above: one "structure" envelope per floor listed, one partitioned, named "interior" room (with a connecting "interior-door" opening) for every entry in "rooms", one opening for every entry in "doors" (a door described as an entrance/exterior becomes group "door"; a door described as connecting two named rooms becomes group "interior-door"), and one "window" opening for every entry in "windows". Look at the image again for the real proportions, wall positions, and which rooms are actually adjacent to each other — position everything to match the actual layout shown, don't arrange rooms arbitrarily. Do not add rooms, doors, or windows beyond what was identified above unless the notes below ask for something extra.`
+        : `You are a professional architect's assistant. The uploaded image is likely a floor plan, blueprint, elevation drawing, or a photo of a building/structure. Read any labeled dimensions, room names, wall lines, door/window markers, and scale indicators as precisely as possible, and reconstruct them as an accurate to-scale 3D design — prioritize matching the real proportions and layout shown over creative interpretation. Do not invent furniture or decor that isn't indicated in the source.`;
       const parts = [
-        { text: `You are a professional architect's assistant. The uploaded image is likely a floor plan, blueprint, elevation drawing, or a photo of a building/structure. Read any labeled dimensions, room names, wall lines, door/window markers, and scale indicators as precisely as possible, and reconstruct them as an accurate to-scale 3D design — prioritize matching the real proportions and layout shown over creative interpretation. Do not invent furniture or decor that isn't indicated in the source. ${notes ? `Architect's notes: ${notes}.` : ''}\n${schemaInstructions({ furnish: false })}` },
+        { text: `${groundedText} ${notes ? `Architect's notes: ${notes}.` : ''}\n${schemaInstructions()}` },
         { inlineData: { mimeType, data: base64 } },
       ];
       const text = await callGemini(parts);
-      const json = reinforceDesign(JSON.parse(stripFences(text)), { furnish: false });
-      return { ...json, engine: 'gemini' };
+      const json = reinforceDesign(JSON.parse(stripFences(text)));
+      return { ...json, detected, engine: 'gemini' };
     } catch (err) {
       console.error('Gemini blueprint analysis failed, falling back to offline engine:', err.message);
     }
   }
   const offline = offlineDesign(notes, fileName);
-  return { ...offline, engine: 'offline' };
+  return { ...offline, detected: detectedFromOffline(offline), engine: 'offline' };
 }
 
 async function chatDesign({ message, history }) {
@@ -425,12 +547,12 @@ async function chatDesign({ message, history }) {
     try {
       const convo = (history || []).map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`).join('\n');
       const parts = [
-        { text: `You are a professional architectural design assistant embedded in an app called Arch-3d build. A user is describing a building or space they want designed. Conversation so far:\n${convo}\nUser: ${message}\n\n${schemaInstructions({ furnish: true })}` },
+        { text: `You are a professional architectural design assistant embedded in an app called Arch-3d build. A user is describing a building or space they want designed. Conversation so far:\n${convo}\nUser: ${message}\n\n${schemaInstructions()}` },
       ];
       const text = await callGemini(parts);
-      const json = reinforceDesign(JSON.parse(stripFences(text)), { furnish: true });
+      const json = reinforceDesign(JSON.parse(stripFences(text)));
       return {
-        reply: json.title ? `Here's a furnished concept for "${json.title}".` : 'Here is a concept based on your description.',
+        reply: json.title ? `Here's a concept for "${json.title}".` : 'Here is a concept based on your description.',
         result: { ...json, engine: 'gemini' },
       };
     } catch (err) {
@@ -537,10 +659,156 @@ All numbers are plain numbers in the chosen local currency, no symbols or commas
   };
 }
 
+// ---------------------------------------------------------------------------
+// ESTATE / COMPOUND GENERATION
+//
+// An estate is generated as N independent buildings (each reusing the same
+// proven single-building JSON contract above, so each house gets the same
+// real walls/openings/rooms quality as a standalone design) plus a SEPARATE,
+// purely procedural site-layout step that places them on the site.
+//
+// The layout is deliberately NOT left to the AI: grid math guarantees
+// non-overlapping footprints and consistent road spacing every time, which
+// is the "geometric correctness before visual decoration" principle this
+// app is built around — an AI-guessed layout could plausibly overlap houses
+// or ignore the site boundary, a procedural one cannot.
+// ---------------------------------------------------------------------------
+
+async function generateEstateBuilding({ description, index, total }) {
+  if (genAI) {
+    try {
+      const variation = `This is building ${index} of ${total} in a residential estate/compound. Estate brief: "${description}". Give this specific building its own distinct footprint, room count, and roofline appropriate to the brief — vary its size/bedroom count/style slightly from a "typical" building matching the brief so the estate doesn't look like ${total} identical clones, while staying consistent with the overall estate description and any per-house instructions in it (e.g. "houses 2-5 should be 3-bedroom duplexes").`;
+      const parts = [{ text: `You are a professional architectural design assistant generating ONE building within a larger estate project.\n${variation}\n\n${schemaInstructions()}` }];
+      const text = await callGemini(parts);
+      const json = reinforceDesign(JSON.parse(stripFences(text)));
+      return { ...json, engine: 'gemini' };
+    } catch (err) {
+      console.error(`Estate building ${index}/${total} generation failed, using offline template:`, err.message);
+    }
+  }
+  // Offline fallback: cycle a house template with a per-index scale variation
+  // so buildings in the estate are still visually distinguishable from
+  // each other, clearly labeled as offline/procedural (never claimed as AI).
+  const offline = offlineDesign(description, '');
+  const scale = 0.82 + ((index - 1) % 5) * 0.09;
+  const scaled = JSON.parse(JSON.stringify(offline));
+  scaled.title = `${offline.title} (variant ${index})`;
+  scaled.modelSpec.parts = (scaled.modelSpec.parts || []).map(p => ({
+    ...p,
+    size: p.size ? p.size.map(v => v * scale) : p.size,
+    radiusTop: p.radiusTop != null ? p.radiusTop * scale : p.radiusTop,
+    radiusBottom: p.radiusBottom != null ? p.radiusBottom * scale : p.radiusBottom,
+    height: p.type === 'cylinder' && p.height != null ? p.height * scale : p.height,
+    position: p.position ? p.position.map(v => v * scale) : p.position,
+  }));
+  return { ...scaled, engine: 'offline' };
+}
+
+// Small bounded-concurrency helper — keeps several Gemini calls in flight
+// at once (faster than fully sequential) without firing all N at once
+// (which risks free-tier rate limits on larger estates).
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+// Reads each building's own generated geometry to get its real footprint
+// (bounding box in the X/Z plane), rather than assuming a fixed lot size —
+// so the procedural layout below fits the buildings that actually exist.
+function computeFootprint(modelSpec) {
+  const parts = modelSpec?.parts || [];
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  parts.forEach(p => {
+    const [x = 0, , z = 0] = p.position || [0, 0, 0];
+    let halfW = 0.5, halfD = 0.5;
+    if (p.type === 'cylinder') {
+      const r = Math.max(p.radiusTop ?? 0, p.radiusBottom ?? 0, 0.3);
+      halfW = r; halfD = r;
+    } else if (p.size) {
+      halfW = (p.size[0] || 1) / 2;
+      halfD = (p.size[2] || 1) / 2;
+    }
+    minX = Math.min(minX, x - halfW); maxX = Math.max(maxX, x + halfW);
+    minZ = Math.min(minZ, z - halfD); maxZ = Math.max(maxZ, z + halfD);
+  });
+  if (!isFinite(minX)) return { width: 10, depth: 8 };
+  return { width: Math.max(maxX - minX, 3), depth: Math.max(maxZ - minZ, 3) };
+}
+
+// Deterministic grid placement with a fixed road-width gap between every
+// building on both axes. Guarantees zero footprint overlap by construction.
+function layoutEstate(buildings, siteWidth, siteDepth) {
+  const ROAD_GAP = 6;
+  const SETBACK = 3;
+  const footprints = buildings.map(b => computeFootprint(b.modelSpec));
+  const cellW = Math.max(...footprints.map(f => f.width), 6) + ROAD_GAP;
+  const cellD = Math.max(...footprints.map(f => f.depth), 6) + ROAD_GAP;
+  const usableWidth = Math.max((siteWidth || 0) - SETBACK * 2, cellW);
+  const cols = Math.max(1, Math.min(buildings.length, Math.floor(usableWidth / cellW) || 1));
+  const rows = Math.ceil(buildings.length / cols);
+
+  const positions = buildings.map((_, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    return {
+      x: -((cols - 1) * cellW) / 2 + col * cellW,
+      z: -((rows - 1) * cellD) / 2 + row * cellD,
+    };
+  });
+
+  return {
+    positions,
+    site: {
+      width: Math.max(siteWidth || 0, cols * cellW + SETBACK * 2),
+      depth: Math.max(siteDepth || 0, rows * cellD + SETBACK * 2),
+      cols, rows, roadGap: ROAD_GAP,
+    },
+  };
+}
+
+async function generateEstate({ description, buildingCount, siteWidth, siteDepth }) {
+  const count = Math.max(1, Math.min(10, Number(buildingCount) || 4));
+  const indices = Array.from({ length: count }, (_, i) => i + 1);
+  const buildingResults = await mapWithConcurrency(indices, 3, (i) =>
+    generateEstateBuilding({ description, index: i, total: count })
+  );
+
+  const { positions, site } = layoutEstate(buildingResults, Number(siteWidth) || 60, Number(siteDepth) || 60);
+  const engine = buildingResults.some(b => b.engine === 'gemini') ? 'gemini' : 'offline';
+
+  const buildings = buildingResults.map((b, i) => ({
+    name: b.title || `House ${String(i + 1).padStart(2, '0')}`,
+    position: [positions[i].x, positions[i].z],
+    rotation: 0,
+    category: b.category || 'house',
+    summary: b.summary || '',
+    dimensions: b.dimensions || [],
+    materials: b.materials || [],
+    modelSpec: b.modelSpec || { parts: [] },
+  }));
+
+  return {
+    title: description ? `Estate — ${description.slice(0, 60)}` : 'New Residential Estate',
+    summary: `A ${count}-building estate generated from: "${description || 'no brief given'}".`,
+    site,
+    buildings,
+    engine,
+  };
+}
+
 module.exports = {
   analyzeBlueprint,
   chatDesign,
   generateRenderImage,
   generateCostEstimate,
+  generateEstate,
   isOnline: () => Boolean(GEMINI_KEY),
 };

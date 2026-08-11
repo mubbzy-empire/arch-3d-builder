@@ -3,197 +3,37 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
-
-const MATERIAL_COLORS = { wood: 0xb98a55, metal: 0xaab2bd, glass: 0x8fd0e0, fabric: 0x6f6a63 };
-const GROUP_LABELS = { structure: 'Walls', roof: 'Roof', door: 'Door', window: 'Windows', interior: 'Interior', furniture: 'Furniture' };
-
-// ---------------------------------------------------------------------------
-// Cheap procedural textures — generated once on a <canvas> and cached at
-// module scope, reused across every mesh/mount instead of regenerating.
-// ---------------------------------------------------------------------------
-let woodTextureCache = null;
-function getWoodTexture() {
-  if (woodTextureCache) return woodTextureCache;
-  const size = 128;
-  const canvas = document.createElement('canvas');
-  canvas.width = size; canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#bd905e';
-  ctx.fillRect(0, 0, size, size);
-  for (let i = 0; i < 40; i++) {
-    const y = Math.random() * size;
-    const shade = 0.85 + Math.random() * 0.3;
-    ctx.strokeStyle = `rgba(${Math.round(120 * shade)}, ${Math.round(80 * shade)}, ${Math.round(45 * shade)}, ${0.15 + Math.random() * 0.2})`;
-    ctx.lineWidth = 0.5 + Math.random() * 1.5;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.bezierCurveTo(size * 0.3, y + (Math.random() - 0.5) * 8, size * 0.7, y + (Math.random() - 0.5) * 8, size, y);
-    ctx.stroke();
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(2, 2);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  woodTextureCache = texture;
-  return texture;
-}
-
-let fabricTextureCache = null;
-function getFabricTexture() {
-  if (fabricTextureCache) return fabricTextureCache;
-  const size = 64;
-  const canvas = document.createElement('canvas');
-  canvas.width = size; canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#6f6a63';
-  ctx.fillRect(0, 0, size, size);
-  for (let y = 0; y < size; y += 2) {
-    for (let x = 0; x < size; x += 2) {
-      if ((x + y) % 4 === 0) { ctx.fillStyle = 'rgba(0,0,0,0.06)'; ctx.fillRect(x, y, 2, 2); }
-    }
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(4, 4);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  fabricTextureCache = texture;
-  return texture;
-}
-
-let shadowTextureCache = null;
-function getShadowTexture() {
-  if (shadowTextureCache) return shadowTextureCache;
-  const size = 256;
-  const canvas = document.createElement('canvas');
-  canvas.width = size; canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  gradient.addColorStop(0, 'rgba(0,0,0,0.55)');
-  gradient.addColorStop(0.7, 'rgba(0,0,0,0.22)');
-  gradient.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-  shadowTextureCache = new THREE.CanvasTexture(canvas);
-  return shadowTextureCache;
-}
-
-function makeMaterial(materialName, colorHex) {
-  const isGlass = materialName === 'glass';
-  const isMetal = materialName === 'metal';
-  const baseColor = colorHex
-    ? new THREE.Color(colorHex)
-    : new THREE.Color(materialName === 'wood' || materialName === 'fabric' ? 0xffffff : (MATERIAL_COLORS[materialName] ?? 0xc9a26a));
-  const props = {
-    color: baseColor,
-    roughness: isGlass ? 0.05 : isMetal ? 0.35 : 0.7,
-    metalness: isMetal ? 0.75 : isGlass ? 0.15 : 0.04,
-    transparent: isGlass,
-    opacity: isGlass ? 0.5 : 1,
-    envMapIntensity: isGlass ? 1.4 : isMetal ? 1.1 : 0.6,
-  };
-  if (materialName === 'wood' && !colorHex) props.map = getWoodTexture();
-  if (materialName === 'fabric' && !colorHex) props.map = getFabricTexture();
-  return new THREE.MeshStandardMaterial(props);
-}
-
-function buildMesh(part) {
-  let geometry;
-  if (part.type === 'cylinder') {
-    geometry = new THREE.CylinderGeometry(part.radiusTop ?? 0.1, part.radiusBottom ?? 0.1, part.height ?? 1, 24);
-  } else {
-    const [w, h, d] = part.size || [0.5, 0.5, 0.5];
-    geometry = new THREE.BoxGeometry(w, h, d);
-  }
-  const isGlass = part.material === 'glass';
-  const mesh = new THREE.Mesh(geometry, makeMaterial(part.material, part.color));
-  const [x, y, z] = part.position || [0, 0, 0];
-  mesh.position.set(x, y, z);
-  mesh.castShadow = !isGlass;
-  mesh.receiveShadow = true;
-  mesh.userData.group = part.group || 'structure';
-  mesh.userData.originalPosition = mesh.position.clone();
-  return mesh;
-}
-
-// ---------------------------------------------------------------------------
-// Building shell: turns a single "structure" envelope box into real hollow
-// walls with actual cut-through door/window openings, using CSG boolean
-// operations — computed locally in the browser, no external service.
-// ---------------------------------------------------------------------------
-function buildHollowShell(structurePart, openingParts) {
-  const [w, h, d] = structurePart.size || [4, 3, 4];
-  const thickness = Math.min(0.25, Math.max(0.06, Math.min(w, d) * 0.02));
-  const cornerRadius = Math.min(0.12, Math.min(w, d) * 0.015);
-
-  const outer = new Brush(new RoundedBoxGeometry(w, h, d, 2, cornerRadius));
-  outer.updateMatrixWorld();
-  const inner = new Brush(new THREE.BoxGeometry(Math.max(w - thickness * 2, 0.05), h + 1, Math.max(d - thickness * 2, 0.05)));
-  inner.updateMatrixWorld();
-
-  const evaluator = new Evaluator();
-  let shellBrush = evaluator.evaluate(outer, inner, SUBTRACTION);
-
-  const fillMeshes = [];
-  for (const part of openingParts) {
-    const [ow, oh, od] = part.size || [0.9, 1.2, 0.05];
-    const dims = [ow, oh, od];
-    const thinIdx = dims.indexOf(Math.min(...dims));
-    const cutDims = [...dims];
-    cutDims[thinIdx] = thickness * 4;
-
-    const cutter = new Brush(new THREE.BoxGeometry(cutDims[0], cutDims[1], cutDims[2]));
-    const [x, y, z] = part.position || [0, 0, 0];
-    cutter.position.set(x, y, z);
-    cutter.updateMatrixWorld();
-    shellBrush = evaluator.evaluate(shellBrush, cutter, SUBTRACTION);
-
-    const fillDims = [...dims];
-    fillDims[thinIdx] = thickness * 0.9;
-    const isDoor = part.group === 'door';
-    const fillGeo = isDoor
-      ? new RoundedBoxGeometry(fillDims[0], fillDims[1], fillDims[2], 1, Math.min(0.02, fillDims[0] * 0.05))
-      : new THREE.BoxGeometry(fillDims[0], fillDims[1], fillDims[2]);
-    const fillMesh = new THREE.Mesh(fillGeo, makeMaterial(part.material || (isDoor ? 'wood' : 'glass'), part.color));
-    fillMesh.position.set(x, y, z);
-    fillMesh.castShadow = isDoor;
-    fillMesh.receiveShadow = true;
-    fillMesh.userData.group = part.group || 'window';
-    fillMesh.userData.originalPosition = fillMesh.position.clone();
-    fillMeshes.push(fillMesh);
-  }
-
-  shellBrush.material = makeMaterial(structurePart.material || 'wood', structurePart.color);
-  shellBrush.castShadow = true;
-  shellBrush.receiveShadow = true;
-  shellBrush.userData.group = 'structure';
-  shellBrush.userData.originalPosition = shellBrush.position.clone();
-
-  return { shellMesh: shellBrush, fillMeshes };
-}
+import { GROUP_LABELS, getShadowTexture, buildBuildingMeshes, buildManualMeshes } from '../three/buildParts';
+import PartInfoPanel from './PartInfoPanel';
 
 export default function ModelViewer({ modelSpec, title }) {
   const mountRef = useRef(null);
   const [wireframe, setWireframe] = useState(false);
   const [hideRoof, setHideRoof] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [transformMode, setTransformMode] = useState('translate');
   const [selectedLabel, setSelectedLabel] = useState(null);
+  const [selectedInfo, setSelectedInfo] = useState(null);
   const [colorOverrides, setColorOverrides] = useState({});
   const [buildError, setBuildError] = useState(null);
   const [storyView, setStoryView] = useState(false);
+  // The WebGL scene is expensive to build (geometry, textures, shadow maps)
+  // and isn't needed until the person actually wants to look at it — so we
+  // don't touch Three.js at all until they tap "View 3D model".
+  const [started, setStarted] = useState(false);
   const meshesRef = useRef([]);
   const transformRef = useRef(null);
   const sceneRef = useRef(null);
   const groupRef = useRef(null);
   const editModeRef = useRef(false);
+  const transformModeRef = useRef('translate');
 
   const parts = modelSpec?.parts || [];
   const hasRoof = parts.some(p => p.group === 'roof');
   const presentGroups = useMemo(() => {
     const seen = new Set(parts.map(p => p.group || 'structure'));
-    return ['structure', 'roof', 'door', 'window', 'interior', 'furniture'].filter(g => seen.has(g));
+    return ['structure', 'roof', 'door', 'window', 'interior', 'interior-door', 'balcony'].filter(g => seen.has(g));
   }, [modelSpec]);
   const presentFloors = useMemo(() => {
     const seen = new Set(parts.filter(p => p.group === 'structure' || !p.group).map(p => p.floor ?? 1));
@@ -204,14 +44,22 @@ export default function ModelViewer({ modelSpec, title }) {
     setHideRoof(false);
     setColorOverrides({});
     setEditMode(false);
+    setTransformMode('translate');
     setSelectedLabel(null);
+    setSelectedInfo(null);
     setBuildError(null);
     setStoryView(false);
+    setStarted(false);
   }, [modelSpec]);
 
   useEffect(() => { editModeRef.current = editMode; }, [editMode]);
+  useEffect(() => {
+    transformModeRef.current = transformMode;
+    if (transformRef.current) transformRef.current.setMode(transformMode);
+  }, [transformMode]);
 
   useEffect(() => {
+    if (!started) return;
     const mount = mountRef.current;
     if (!mount) return;
 
@@ -263,48 +111,19 @@ export default function ModelViewer({ modelSpec, title }) {
       groupRef.current = group;
       const inputParts = parts.length ? parts : [{ type: 'box', size: [1, 1, 1], position: [0, 0.5, 0], material: 'wood', group: 'structure' }];
 
-      const openingParts = inputParts.filter(p => p.group === 'door' || p.group === 'window');
-      const structureParts = inputParts.filter(p => p.group === 'structure' || !p.group);
-      const otherParts = inputParts.filter(p => p.group && p.group !== 'structure' && p.group !== 'door' && p.group !== 'window');
-
       // Multi-story support: each structure part may carry a "floor" number
       // (1 = ground floor, 2 = next up, etc). Every floor's envelope gets
       // its own independent hollow shell with its own matching door/window
       // openings — this makes each floor its own selectable, draggable part
       // in the viewer, so pulling one floor's walls away reveals the rest.
-      const meshes = [];
-      const floorNumbers = [...new Set(structureParts.map(p => p.floor ?? 1))].sort((a, b) => a - b);
-      const isBuilding = openingParts.length > 0 && structureParts.length > 0;
-
-      if (isBuilding) {
-        floorNumbers.forEach(floorNum => {
-          const floorStructure = structureParts.filter(p => (p.floor ?? 1) === floorNum);
-          const floorOpenings = openingParts.filter(p => (p.floor ?? 1) === floorNum);
-          const [envelope, ...extraStructure] = floorStructure;
-          if (!envelope) return;
-          const { shellMesh, fillMeshes } = buildHollowShell(envelope, floorOpenings);
-          shellMesh.userData.floor = floorNum;
-          fillMeshes.forEach(m => { m.userData.floor = floorNum; });
-          meshes.push(shellMesh, ...fillMeshes);
-          extraStructure.forEach(p => {
-            const m = buildMesh(p);
-            m.userData.floor = floorNum;
-            meshes.push(m);
-          });
-        });
-      } else {
-        structureParts.forEach(p => {
-          const m = buildMesh(p);
-          m.userData.floor = p.floor ?? 1;
-          meshes.push(m);
-        });
-      }
-      otherParts.forEach(p => {
-        const m = buildMesh(p);
-        m.userData.floor = p.floor ?? 1;
-        m.userData.room = p.room || null;
-        meshes.push(m);
-      });
+      //
+      // A "manual" scene (built wall-by-wall in the from-scratch modeler)
+      // carries its own per-wall openings via each opening's `wallId`
+      // rather than one whole-building envelope — detect and branch to the
+      // matching builder so each wall only gets its own doors/windows cut
+      // into it, not every opening in the scene.
+      const isManualScene = inputParts.some(p => p.wallId);
+      const meshes = isManualScene ? buildManualMeshes(inputParts).meshes : buildBuildingMeshes(inputParts);
 
       meshes.forEach(m => group.add(m));
       meshesRef.current = meshes;
@@ -342,9 +161,9 @@ export default function ModelViewer({ modelSpec, title }) {
       shadowDisc.position.set(center.x, box.min.y + 0.002, center.z);
       scene.add(shadowDisc);
 
-      // Click-to-select + drag gizmo (edit mode only), Blender-style.
+      // Click-to-select + drag/rotate gizmo (edit mode only), Blender-style.
       const transformControls = new TransformControls(camera, renderer.domElement);
-      transformControls.setMode('translate');
+      transformControls.setMode(transformModeRef.current);
       transformControls.setSize(0.9);
       transformControls.enabled = false;
       transformControls.visible = false;
@@ -360,7 +179,7 @@ export default function ModelViewer({ modelSpec, title }) {
 
       const onPointerDown = (e) => { downPos = { x: e.clientX, y: e.clientY }; };
       const onPointerUp = (e) => {
-        if (!editModeRef.current || transformControls.dragging) return;
+        if (transformControls.dragging) return;
         if (downPos) {
           const moved = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
           if (moved > 6) return; // was an orbit drag, not a click
@@ -372,15 +191,27 @@ export default function ModelViewer({ modelSpec, title }) {
         const hits = raycaster.intersectObjects(meshesRef.current, false);
         if (hits.length) {
           const target = hits[0].object;
-          transformControls.attach(target);
-          transformControls.enabled = true;
-          transformControls.visible = true;
-          setSelectedLabel(GROUP_LABELS[target.userData.group] || target.userData.group);
+          const label = GROUP_LABELS[target.userData.group] || target.userData.group;
+          setSelectedLabel(label);
+          setSelectedInfo({
+            label,
+            group: target.userData.group,
+            room: target.userData.room || null,
+            floor: target.userData.floor ?? 1,
+            material: target.userData.material || null,
+          });
+          if (editModeRef.current) {
+            transformControls.attach(target);
+            transformControls.setMode(transformModeRef.current);
+            transformControls.enabled = true;
+            transformControls.visible = true;
+          }
         } else {
           transformControls.detach();
           transformControls.enabled = false;
           transformControls.visible = false;
           setSelectedLabel(null);
+          setSelectedInfo(null);
         }
       };
       renderer.domElement.addEventListener('pointerdown', onPointerDown);
@@ -424,7 +255,7 @@ export default function ModelViewer({ modelSpec, title }) {
     }
 
     return () => cleanup();
-  }, [modelSpec]);
+  }, [modelSpec, started]);
 
   useEffect(() => {
     meshesRef.current.forEach(m => { m.material.wireframe = wireframe; });
@@ -446,13 +277,13 @@ export default function ModelViewer({ modelSpec, title }) {
       transformRef.current.detach();
       transformRef.current.enabled = false;
       transformRef.current.visible = false;
-      setSelectedLabel(null);
     }
   }, [editMode]);
 
   const resetPositions = () => {
     meshesRef.current.forEach(m => {
       if (m.userData.originalPosition) m.position.copy(m.userData.originalPosition);
+      if (m.userData.originalRotationY != null) m.rotation.y = m.userData.originalRotationY;
     });
     if (transformRef.current) {
       transformRef.current.detach();
@@ -460,6 +291,7 @@ export default function ModelViewer({ modelSpec, title }) {
       transformRef.current.visible = false;
     }
     setSelectedLabel(null);
+    setSelectedInfo(null);
     setStoryView(false);
   };
 
@@ -512,21 +344,42 @@ export default function ModelViewer({ modelSpec, title }) {
     );
   }
 
+  if (!started) {
+    return (
+      <div className="viewer-shell">
+        <div className="viewer-launcher">
+          <span className="viewer-launcher-icon" />
+          <p className="page-sub">
+            The 3D model {hasRoof ? 'loads with the roof on — reveal the interior any time with the button below.' : 'is ready to load.'}
+          </p>
+          <button className="btn btn-primary" onClick={() => setStarted(true)}>View 3D model</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="viewer-shell">
-      <span className="viewer-tag">3D preview · drag to orbit</span>
+      <span className="viewer-tag">3D preview · drag to orbit · tap a part for details</span>
       {editMode && (
-        <span className="viewer-hint">{selectedLabel ? `Editing: ${selectedLabel} — drag an arrow` : 'Tap a part to select it'}</span>
+        <span className="viewer-hint">{selectedLabel ? `Editing: ${selectedLabel} — drag to ${transformMode === 'rotate' ? 'rotate' : 'move'}` : 'Tap a part to select it'}</span>
       )}
       <div className="viewer-canvas" ref={mountRef} />
+      <PartInfoPanel info={selectedInfo} onClose={() => setSelectedInfo(null)} />
       <div className="viewer-controls">
         {editMode && <button onClick={resetPositions}>Reset positions</button>}
+        {editMode && (
+          <>
+            <button className={transformMode === 'translate' ? 'active' : ''} onClick={() => setTransformMode('translate')}>Move</button>
+            <button className={transformMode === 'rotate' ? 'active' : ''} onClick={() => setTransformMode('rotate')}>Rotate</button>
+          </>
+        )}
         <button className={editMode ? 'active' : ''} onClick={() => setEditMode(v => !v)}>
           {editMode ? 'Done editing' : 'Edit parts'}
         </button>
         {hasRoof && (
           <button className={hideRoof ? 'active' : ''} onClick={() => setHideRoof(v => !v)}>
-            {hideRoof ? 'Show roof' : 'Interior view'}
+            {hideRoof ? 'Hide interior' : 'Show interior'}
           </button>
         )}
         {presentFloors.length > 1 && (

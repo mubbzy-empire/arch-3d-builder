@@ -30,7 +30,7 @@ export default function Projects() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {projects?.map(p => (
-          <div key={p.id} className="project-row" role="button" onClick={() => navigate(`/results/${p.id}`)}>
+          <div key={p.id} className="project-row" role="button" onClick={() => navigate(p.source_type === 'estate' ? `/estate/${p.id}` : `/results/${p.id}`)}>
             <div className="thumb">
               {p.image_path ? <img src={p.image_path} alt="" /> : (
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M4 5h16v11H8l-4 4V5z" /></svg>
