@@ -128,6 +128,120 @@ export function buildOutdoorGround(width, depth) {
   return group;
 }
 
+// ---------------------------------------------------------------------------
+// Compound wall: a perimeter wall with corner pillars, a two-leaf bar gate on
+// one side, and a coping cap — what turns a lone building sitting on open
+// grass into a proper walled "compound". Used by both the single-building
+// viewer and the estate scene so every generated model (bungalow, storey
+// building, or estate) gets the same finished site treatment. `gateSide`
+// picks which side of the plot gets the vehicle entrance — default "front"
+// lines it up with the paved apron buildOutdoorGround() already draws.
+// ---------------------------------------------------------------------------
+export function buildCompoundWall(width, depth, {
+  wallHeight = 1.5, gateWidth = 3.6, gateSide = 'front',
+  wallColor = '#3f4550', capColor = '#e8e4d8', pillarColor = '#2f333c', barColor = '#20232a',
+} = {}) {
+  const group = new THREE.Group();
+  const wallT = 0.18;
+  const pillarSize = 0.34;
+  const halfW = width / 2, halfD = depth / 2;
+
+  const wallMat = new THREE.MeshStandardMaterial({ color: wallColor, roughness: 0.85, metalness: 0.05 });
+  const capMat = new THREE.MeshStandardMaterial({ color: capColor, roughness: 0.6, metalness: 0.1 });
+  const pillarMat = new THREE.MeshStandardMaterial({ color: pillarColor, roughness: 0.75, metalness: 0.08 });
+  const barMat = new THREE.MeshStandardMaterial({ color: barColor, roughness: 0.4, metalness: 0.6 });
+  const tag = (o) => { o.userData.group = 'compound'; o.userData.room = null; o.castShadow = true; o.receiveShadow = true; return o; };
+
+  const addSegment = (cx, cz, length, rotY) => {
+    if (length <= 0.05) return;
+    const wall = tag(new THREE.Mesh(new THREE.BoxGeometry(length, wallHeight, wallT), wallMat));
+    wall.position.set(cx, wallHeight / 2, cz);
+    wall.rotation.y = rotY;
+    group.add(wall);
+    const cap = tag(new THREE.Mesh(new THREE.BoxGeometry(length + 0.04, 0.06, wallT + 0.06), capMat));
+    cap.position.set(cx, wallHeight + 0.03, cz);
+    cap.rotation.y = rotY;
+    group.add(cap);
+  };
+
+  const addPillar = (cx, cz, h = wallHeight + 0.28) => {
+    const pillar = tag(new THREE.Mesh(new THREE.BoxGeometry(pillarSize, h, pillarSize), pillarMat));
+    pillar.position.set(cx, h / 2, cz);
+    group.add(pillar);
+    const cap = tag(new THREE.Mesh(new THREE.BoxGeometry(pillarSize + 0.08, 0.08, pillarSize + 0.08), capMat));
+    cap.position.set(cx, h + 0.04, cz);
+    group.add(cap);
+  };
+
+  const addGateLeaf = (hingeX, fixedCoord, leafW, isZ, dir) => {
+    const leaf = new THREE.Group();
+    const barCount = Math.max(5, Math.round(leafW / 0.18));
+    const leafH = wallHeight * 0.86;
+    for (let i = 0; i <= barCount; i++) {
+      const bx = -leafW / 2 + (leafW * i) / barCount;
+      const bar = tag(new THREE.Mesh(new THREE.BoxGeometry(0.035, leafH, 0.035), barMat));
+      bar.position.set(bx, leafH / 2, 0);
+      leaf.add(bar);
+    }
+    [leafH, 0.06].forEach(y => {
+      const rail = tag(new THREE.Mesh(new THREE.BoxGeometry(leafW, 0.05, 0.05), barMat));
+      rail.position.set(0, y, 0);
+      leaf.add(rail);
+    });
+    const openAngle = dir < 0 ? -0.3 : 0.3;
+    if (isZ) {
+      leaf.position.set(hingeX, 0, fixedCoord);
+      leaf.rotation.y = openAngle;
+    } else {
+      leaf.position.set(fixedCoord, 0, hingeX);
+      leaf.rotation.y = Math.PI / 2 + openAngle;
+    }
+    group.add(leaf);
+  };
+
+  const sides = [
+    { key: 'front', isZ: true, fixed: halfD },
+    { key: 'back', isZ: true, fixed: -halfD },
+    { key: 'left', isZ: false, fixed: -halfW },
+    { key: 'right', isZ: false, fixed: halfW },
+  ];
+
+  sides.forEach(side => {
+    const runLength = side.isZ ? width : depth;
+    const rotY = side.isZ ? 0 : Math.PI / 2;
+    const half = runLength / 2;
+
+    if (side.key !== gateSide) {
+      addSegment(side.isZ ? 0 : side.fixed, side.isZ ? side.fixed : 0, runLength, rotY);
+      return;
+    }
+    const gw = Math.min(gateWidth, runLength * 0.7);
+    const gp = gw / 2;
+    const seg = half - gp;
+    const off = (half + gp) / 2;
+    if (side.isZ) {
+      addSegment(-off, side.fixed, seg, rotY);
+      addSegment(off, side.fixed, seg, rotY);
+      addPillar(-gp, side.fixed, wallHeight + 0.5);
+      addPillar(gp, side.fixed, wallHeight + 0.5);
+      addGateLeaf(-gp, side.fixed, gp - 0.06, true, -1);
+      addGateLeaf(gp, side.fixed, gp - 0.06, true, 1);
+    } else {
+      addSegment(side.fixed, -off, seg, rotY);
+      addSegment(side.fixed, off, seg, rotY);
+      addPillar(side.fixed, -gp, wallHeight + 0.5);
+      addPillar(side.fixed, gp, wallHeight + 0.5);
+      addGateLeaf(-gp, side.fixed, gp - 0.06, false, -1);
+      addGateLeaf(gp, side.fixed, gp - 0.06, false, 1);
+    }
+  });
+
+  [[-halfW, -halfD], [halfW, -halfD], [halfW, halfD], [-halfW, halfD]].forEach(([x, z]) => addPillar(x, z));
+
+  group.userData.group = 'compound';
+  return group;
+}
+
 // Warm sun + sky/ground-bounce ambient, replacing a flat single ambient
 // light with something that reads as a bright but soft daylight photo.
 // `span` should roughly match the scene's footprint so the sun's shadow

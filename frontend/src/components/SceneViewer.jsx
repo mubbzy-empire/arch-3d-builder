@@ -5,7 +5,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GROUP_LABELS, getShadowTexture, buildBuildingMeshes } from '../three/buildParts';
-import { applySkyBackground, buildOutdoorGround, addDaylight } from '../three/skyEnvironment';
+import { applySkyBackground, buildOutdoorGround, addDaylight, buildCompoundWall } from '../three/skyEnvironment';
 import PartInfoPanel from './PartInfoPanel';
 
 // Renders an entire estate/compound: a ground plane sized to the site, a
@@ -96,6 +96,12 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
 
       const ground = buildOutdoorGround(siteWidth, siteDepth);
       scene.add(ground);
+
+      // Whole-estate compound: one perimeter wall + gate around the entire
+      // site (the individual plots inside stay open so cars/roads can pass
+      // between houses) — same wall style a single-building model gets.
+      const compound = buildCompoundWall(siteWidth, siteDepth, { gateWidth: Math.min(6, siteWidth * 0.25) });
+      scene.add(compound);
 
       // Plot/road grid — a technical aid for "Edit layout" mode, hidden the
       // rest of the time so it doesn't sit on top of the paved/grass ground
@@ -238,6 +244,7 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         renderer.dispose();
         scene.environment?.dispose?.();
         ground.children.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); });
+        compound.traverse(m => { m.geometry?.dispose(); m.material?.dispose(); });
         buildingGroups.forEach(g => g.children.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); }));
         if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
       };

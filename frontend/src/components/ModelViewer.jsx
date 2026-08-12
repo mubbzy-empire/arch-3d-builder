@@ -5,7 +5,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GROUP_LABELS, getShadowTexture, buildBuildingMeshes, buildManualMeshes } from '../three/buildParts';
-import { applySkyBackground, buildOutdoorGround, addDaylight } from '../three/skyEnvironment';
+import { applySkyBackground, buildOutdoorGround, addDaylight, buildCompoundWall } from '../three/skyEnvironment';
 import PartInfoPanel from './PartInfoPanel';
 
 export default function ModelViewer({ modelSpec, title }) {
@@ -140,11 +140,29 @@ export default function ModelViewer({ modelSpec, title }) {
       ground.position.set(center.x, box.min.y - 0.001, center.z);
       scene.add(ground);
 
+      // Compound wall: a perimeter wall + gate around the plot, sized to
+      // give the building a real yard inside it (not the whole grass field
+      // the ground plane covers) — the same walled-compound treatment the
+      // estate scene uses, now applied to every single-building model too.
+      // Kept close to the building (not the old radius*4.4) specifically so
+      // it sits inside the camera's default framing below instead of
+      // requiring the person to zoom/pan out to ever see it.
+      const compoundSpan = Math.max(maxDim * 1.45, 9);
+      const compound = buildCompoundWall(compoundSpan, compoundSpan, { gateWidth: Math.min(4, compoundSpan * 0.4) });
+      compound.position.set(center.x, box.min.y, center.z);
+      scene.add(compound);
+
       // Soft interior fill light: off while the roof is on, brought up when
       // "Show interior" is toggled so rooms read clearly instead of relying
       // on the sun alone (which can leave far walls dark once the roof is
       // gone). Toggled in the hideRoof effect below.
-      const interiorFill = new THREE.PointLight(0xfff1d6, 0, Math.max(radius * 6, 10));
+      // Physically-correct lighting (the default since three.js r155+) means
+      // point-light intensity is in candela, where small values like the
+      // "1.2" this used to be are effectively invisible — that's why the
+      // interior looked almost unlit/black once the roof came off. Decay=1
+      // (linear falloff) plus a much higher on-intensity below actually
+      // lights a room-scale interior.
+      const interiorFill = new THREE.PointLight(0xfff1d6, 0, Math.max(radius * 6, 10), 1);
       interiorFill.position.set(center.x, center.y + Math.max(radius * 1.4, 2), center.z);
       scene.add(interiorFill);
       interiorFillRef.current = interiorFill;
@@ -153,7 +171,10 @@ export default function ModelViewer({ modelSpec, title }) {
       camera.far = radius * 60 + 100;
       camera.updateProjectionMatrix();
 
-      const dist = radius * 2.6;
+      // Framed wide enough to include the compound wall by default (not
+      // just the bare building), so the wall/gate are visible on first
+      // load instead of only after zooming out.
+      const dist = Math.max(radius * 2.6, compoundSpan * 0.95);
       camera.position.set(center.x + dist * 0.65, center.y + dist * 0.5, center.z + dist * 0.7);
       controls.target.copy(center);
       controls.minDistance = radius * 0.25;
@@ -261,6 +282,7 @@ export default function ModelViewer({ modelSpec, title }) {
         shadowDisc.geometry.dispose();
         shadowDisc.material.dispose();
         ground.children.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); });
+        compound.traverse(m => { m.geometry?.dispose(); m.material?.dispose(); });
         meshes.forEach(m => { m.geometry.dispose(); m.material.dispose(); });
         if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
       };
@@ -278,7 +300,10 @@ export default function ModelViewer({ modelSpec, title }) {
 
   useEffect(() => {
     meshesRef.current.forEach(m => { if (m.userData.group === 'roof') m.visible = !hideRoof; });
-    if (interiorFillRef.current) interiorFillRef.current.intensity = hideRoof ? 1.2 : 0;
+    // Was "1.2", which is essentially invisible under physically-correct
+    // (candela) point-light units — that's the direct cause of the very
+    // dark/black interior floor in the "Show interior" screenshots.
+    if (interiorFillRef.current) interiorFillRef.current.intensity = hideRoof ? 90 : 0;
   }, [hideRoof, modelSpec]);
 
   useEffect(() => {

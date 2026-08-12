@@ -3,7 +3,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 
 export const MATERIAL_COLORS = { wood: 0xb98a55, metal: 0xaab2bd, glass: 0x8fd0e0, fabric: 0x6f6a63 };
-export const GROUP_LABELS = { structure: 'Walls', roof: 'Roof', door: 'Door', window: 'Windows', interior: 'Interior', 'interior-door': 'Interior door', balcony: 'Balcony', object: 'Object' };
+export const GROUP_LABELS = { structure: 'Walls', roof: 'Roof', door: 'Door', window: 'Windows', interior: 'Interior', 'interior-door': 'Interior door', balcony: 'Balcony', pool: 'Swimming pool', compound: 'Compound wall', object: 'Object' };
 
 // ---------------------------------------------------------------------------
 // Cheap procedural textures — generated once on a <canvas> and cached at
@@ -153,6 +153,12 @@ function buildOpeningDetail({ group, dims, position, rotY = 0, material, color, 
   const cos = Math.cos(rotY), sin = Math.sin(rotY);
   const toWorld = (lx, lz) => [cx + lx * cos + lz * sin, cz - lx * sin + lz * cos];
   const isDoor = group === 'door';
+  // A door opening ~2.2m or wider reads as a vehicle entrance rather than a
+  // person door — dress it as a sectional garage door (horizontal panel
+  // lines, no handle) instead of a hinged-door frame, so anyone who asks
+  // for "a garage" gets one just by sizing a door part wide enough; no new
+  // part type needed.
+  const isGarage = isDoor && ow >= 2.2;
   const frameT = Math.max(0.045, Math.min(ow, oh) * 0.06);
   const frameColor = isDoor ? '#5a3d24' : '#eee7d8';
   const frameMat = isDoor ? 'wood' : 'metal';
@@ -184,6 +190,15 @@ function buildOpeningDetail({ group, dims, position, rotY = 0, material, color, 
     push(0, cy, 0, ow - frameT * 2, mullionT, od * 0.7, frameMat, frameColor, false);
     // Sill: a small ledge projecting outward below the glazing.
     push(0, cy - oh / 2 - 0.03, od * 1.6, ow + frameT * 1.6, 0.05, od * 4, 'metal', '#cfc9ba');
+  } else if (isGarage) {
+    // Sectional garage door: evenly spaced horizontal panel lines across
+    // the face instead of a handle, plus a slightly heavier header lintel.
+    const sections = Math.max(3, Math.round(oh / 0.55));
+    for (let i = 1; i < sections; i++) {
+      const ly = cy - oh / 2 + (oh * i) / sections;
+      push(0, ly, faceOut * 0.55, ow - frameT * 1.4, 0.03, frameD * 0.5, 'metal', '#c7c7c0', false);
+    }
+    push(0, cy - oh / 2 + 0.015, od * 2, ow + frameT * 1.4, 0.03, od * 5, 'metal', '#8b8f96');
   } else {
     // Threshold at the foot, and a door handle.
     push(0, cy - oh / 2 + 0.015, od * 2, ow + frameT * 1.4, 0.03, od * 5, 'metal', '#8b8f96');
@@ -228,6 +243,59 @@ export function buildBalconyMeshes(part) {
     const [px, pz] = toWorld(lx, depth * 0.5);
     meshes.push(makeTrimMesh({ geometry: new THREE.BoxGeometry(0.04, railH, depth), x: px, y: cy + railH / 2, z: pz, rotY: rot, material: 'metal', color: railColor, group: 'balcony', room, castShadow: false }));
   });
+
+  return meshes;
+}
+
+// ---------------------------------------------------------------------------
+// Swimming pool: a sunken basin with tiled side walls, a coping/deck rim,
+// and a water surface — added whenever a spec includes a "pool" group part,
+// so anyone who asks for a pool on their model gets real pool geometry
+// rather than nothing. Part convention: size = [width, waterDepth, length]
+// (waterDepth is how far the basin sinks below ground), position = the
+// center of the deck rim at ground level (y is normally 0).
+// ---------------------------------------------------------------------------
+export function buildPoolMesh(part) {
+  const [width, poolDepth, length] = part.size || [4, 1.3, 8];
+  const [cx, cy, cz] = part.position || [0, 0, 0];
+  const room = part.room || 'Pool';
+  const meshes = [];
+  const copingT = 0.35;
+
+  // Deck / coping rim, flush with the ground.
+  meshes.push(makeTrimMesh({
+    geometry: new THREE.BoxGeometry(width + copingT * 2, 0.08, length + copingT * 2),
+    x: cx, y: cy - 0.02, z: cz, material: 'metal', color: part.color || '#d8d2c1', group: 'pool', room,
+  }));
+
+  // Basin (tiled walls/floor) — a simple solid block is a fine cheap stand-in
+  // since the water surface hides everything below its own top face anyway.
+  const basinMat = makeMaterial('metal', '#bcd9dd');
+  const basin = new THREE.Mesh(new THREE.BoxGeometry(width, poolDepth, length), basinMat);
+  basin.position.set(cx, cy - poolDepth / 2, cz);
+  basin.receiveShadow = true;
+  basin.userData.group = 'pool';
+  basin.userData.room = room;
+  basin.userData.material = 'metal';
+  basin.userData.originalPosition = basin.position.clone();
+  basin.userData.originalRotationY = 0;
+  meshes.push(basin);
+
+  // Water surface, sitting a little below the coping so the rim reads.
+  const waterMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(part.waterColor || '#2fa4c9'),
+    roughness: 0.06, metalness: 0.05, transparent: true, opacity: 0.85, envMapIntensity: 1.5,
+  });
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(width - 0.1, length - 0.1), waterMat);
+  water.rotation.x = -Math.PI / 2;
+  water.position.set(cx, cy - 0.12, cz);
+  water.receiveShadow = true;
+  water.userData.group = 'pool';
+  water.userData.room = room;
+  water.userData.material = 'glass';
+  water.userData.originalPosition = water.position.clone();
+  water.userData.originalRotationY = 0;
+  meshes.push(water);
 
   return meshes;
 }
@@ -328,16 +396,20 @@ export function buildHollowShell(structurePart, openingParts) {
     const fillDims = [...dims];
     fillDims[thinIdx] = thickness * 0.9;
     const isDoor = part.group === 'door';
+    const isGarage = isDoor && (part.size?.[0] ?? 0) >= 2.2;
     const fillGeo = isDoor
       ? new RoundedBoxGeometry(fillDims[0], fillDims[1], fillDims[2], 1, Math.min(0.02, fillDims[0] * 0.05))
       : new THREE.BoxGeometry(fillDims[0], fillDims[1], fillDims[2]);
-    const fillMesh = new THREE.Mesh(fillGeo, makeMaterial(part.material || (isDoor ? 'wood' : 'glass'), part.color));
+    const fillMesh = new THREE.Mesh(fillGeo, makeMaterial(
+      part.material || (isGarage ? 'metal' : isDoor ? 'wood' : 'glass'),
+      part.color || (isGarage ? '#d9d9d2' : undefined)
+    ));
     fillMesh.position.set(x, y, z);
     fillMesh.castShadow = isDoor;
     fillMesh.receiveShadow = true;
     fillMesh.userData.group = part.group || 'window';
     fillMesh.userData.room = part.room || null;
-    fillMesh.userData.material = part.material || (isDoor ? 'wood' : 'glass');
+    fillMesh.userData.material = part.material || (isGarage ? 'metal' : isDoor ? 'wood' : 'glass');
     fillMesh.userData.originalPosition = fillMesh.position.clone();
     fillMesh.userData.originalRotationY = fillMesh.rotation.y;
     fillMeshes.push(fillMesh);
@@ -419,6 +491,7 @@ export function buildWallWithOpenings(wallPart, openingParts) {
     const [ow, oh, od] = part.size || [0.9, 1.2, 0.2];
     const [ox, oy, oz] = part.position || [wx, oh / 2, wz];
     const isDoor = part.group === 'door';
+    const isGarage = isDoor && ow >= 2.2;
 
     const cutter = new Brush(new THREE.BoxGeometry(ow, oh, Math.max(od, d * 3)));
     cutter.position.set(ox, oy, oz);
@@ -428,7 +501,7 @@ export function buildWallWithOpenings(wallPart, openingParts) {
 
     const fillMesh = new THREE.Mesh(
       new THREE.BoxGeometry(ow * 0.94, oh, Math.max(d * 0.85, 0.04)),
-      makeMaterial(part.material || (isDoor ? 'wood' : 'glass'), part.color)
+      makeMaterial(part.material || (isGarage ? 'metal' : isDoor ? 'wood' : 'glass'), part.color || (isGarage ? '#d9d9d2' : undefined))
     );
     fillMesh.position.set(ox, oy, oz);
     fillMesh.rotation.y = rotY;
@@ -436,7 +509,7 @@ export function buildWallWithOpenings(wallPart, openingParts) {
     fillMesh.receiveShadow = true;
     fillMesh.userData.group = part.group;
     fillMesh.userData.room = part.room || null;
-    fillMesh.userData.material = part.material || (isDoor ? 'wood' : 'glass');
+    fillMesh.userData.material = part.material || (isGarage ? 'metal' : isDoor ? 'wood' : 'glass');
     fillMesh.userData.originalPosition = fillMesh.position.clone();
     fillMesh.userData.originalRotationY = fillMesh.rotation.y;
     fillMeshes.push(fillMesh);
@@ -543,11 +616,88 @@ function buildInteriorWallWithDoors(wallPart, doorParts) {
   return { wallMesh, fillMeshes };
 }
 
+// ---------------------------------------------------------------------------
+// Corner pilasters: a banded vertical column straddling each of a floor's
+// four corners, in a contrasting dark tone with light horizontal accent
+// bands — the single detail that most separates a "flat colored box" render
+// from the crisp, banded-corner look of a real elevation rendering. Applied
+// procedurally to every floor of every building, regardless of what the AI
+// specified, exactly like the existing string-course/plinth trim below.
+// ---------------------------------------------------------------------------
+function addCornerPilasters(meshes, envelope, floorNum) {
+  const [ew, eh, ed] = envelope.size || [4, 3, 4];
+  const [ecx, ecy, ecz] = envelope.position || [0, eh / 2, 0];
+  const pilW = Math.min(0.5, Math.max(0.26, Math.min(ew, ed) * 0.06));
+  const baseY = ecy - eh / 2;
+  const color = '#333849';
+  const bandColor = '#e7e3d6';
+  const corners = [
+    [ecx - ew / 2 + pilW / 2, ecz - ed / 2 + pilW / 2],
+    [ecx + ew / 2 - pilW / 2, ecz - ed / 2 + pilW / 2],
+    [ecx - ew / 2 + pilW / 2, ecz + ed / 2 - pilW / 2],
+    [ecx + ew / 2 - pilW / 2, ecz + ed / 2 - pilW / 2],
+  ];
+  corners.forEach(([cx, cz]) => {
+    const pilaster = makeTrimMesh({
+      geometry: new THREE.BoxGeometry(pilW, eh, pilW),
+      x: cx, y: baseY + eh / 2, z: cz, material: 'metal', color, group: 'structure',
+    });
+    pilaster.userData.floor = floorNum;
+    meshes.push(pilaster);
+    const bands = 3;
+    for (let i = 1; i <= bands; i++) {
+      const band = makeTrimMesh({
+        geometry: new THREE.BoxGeometry(pilW + 0.012, 0.035, pilW + 0.012),
+        x: cx, y: baseY + (eh * i) / (bands + 1), z: cz, material: 'metal', color: bandColor, group: 'structure', castShadow: false,
+      });
+      band.userData.floor = floorNum;
+      meshes.push(band);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Skirting board: a thin trim strip at the base of a partition wall, in a
+// finish tone distinct from the wall itself — a small, cheap detail that
+// reads as "professionally finished interior" instead of bare CSG-cut
+// partitions, matching the level of finish the exterior corner
+// pilasters/plinth already give the outside of the building.
+// ---------------------------------------------------------------------------
+function addSkirtingForWall(meshes, wallPart, floorNum) {
+  const [ww, wh, wd] = wallPart.size || [0.1, 3, 4];
+  const [wx, wy, wz] = wallPart.position || [0, wh / 2, 0];
+  const thinIsX = ww < wd;
+  const length = thinIsX ? wd : ww;
+  const thick = (thinIsX ? ww : wd) + 0.02;
+  const baseY = wy - wh / 2;
+  const geo = thinIsX ? new THREE.BoxGeometry(thick, 0.09, length) : new THREE.BoxGeometry(length, 0.09, thick);
+  const skirting = makeTrimMesh({
+    geometry: geo, x: wx, y: baseY + 0.045, z: wz,
+    material: 'metal', color: '#e9e6dc', group: 'interior', room: wallPart.room || null, castShadow: false,
+  });
+  skirting.userData.floor = floorNum;
+  meshes.push(skirting);
+}
+
 // Builds one building's full mesh list (walls w/ real cutouts, floors,
 // roof, balconies) from its modelSpec.parts — shared by the single-building
 // editor and the multi-building estate viewer so both produce identical
 // geometry quality.
-export function buildBuildingMeshes(parts) {
+export function buildBuildingMeshes(rawParts) {
+  // AI-authored partition walls almost always come through as material
+  // "wood" with no explicit color (that's just the schema's generic
+  // fallback), which renders as a strong golden-pine tone that clashes with
+  // a light exterior palette and reads as unfinished rather than "well
+  // partitioned". Give any wall-shaped interior part a clean off-white
+  // finish by default unless the AI (or a template) chose a color on
+  // purpose — floor slabs (flat, not wall-shaped) are untouched and keep
+  // their warm wood-floor look.
+  const parts = rawParts.map(p => {
+    if (p.group === 'interior' && !p.color && isPartitionWall(p)) {
+      return { ...p, color: '#eef0ea' };
+    }
+    return p;
+  });
   const openingParts = parts.filter(p => p.group === 'door' || p.group === 'window');
   const structureParts = parts.filter(p => p.group === 'structure' || !p.group);
   const interiorDoorParts = parts.filter(p => p.group === 'interior-door');
@@ -585,6 +735,7 @@ export function buildBuildingMeshes(parts) {
       const [ecx, ecy, ecz] = envelope.position || [0, eh / 2, 0];
       const baseY = ecy - eh / 2;
       const overhang = Math.min(0.07, Math.min(ew, ed) * 0.012) + 0.025;
+      addCornerPilasters(meshes, envelope, floorNum);
       if (idx > 0) {
         meshes.push(makeTrimMesh({
           geometry: new THREE.BoxGeometry(ew + overhang * 2, 0.11, ed + overhang * 2),
@@ -624,12 +775,19 @@ export function buildBuildingMeshes(parts) {
       m.userData.room = wall.room || null;
       meshes.push(m);
     }
+    addSkirtingForWall(meshes, wall, wall.floor ?? 1);
   });
   nonPartitionOther.forEach(p => {
     if (p.group === 'balcony') {
       const bMeshes = buildBalconyMeshes(p);
       bMeshes.forEach(m => { m.userData.floor = p.floor ?? 1; });
       meshes.push(...bMeshes);
+      return;
+    }
+    if (p.group === 'pool') {
+      const poolMeshes = buildPoolMesh(p);
+      poolMeshes.forEach(m => { m.userData.floor = p.floor ?? 1; });
+      meshes.push(...poolMeshes);
       return;
     }
     const m = buildMesh(p);
