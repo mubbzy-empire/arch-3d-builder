@@ -16,20 +16,27 @@ export function getSkyTexture() {
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d');
   const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, '#4d7dc4');
-  grad.addColorStop(0.32, '#9fc2e6');
-  grad.addColorStop(0.6, '#d9e8f0');
-  grad.addColorStop(1, '#f2efe4');
+  grad.addColorStop(0, '#3f5f86');
+  grad.addColorStop(0.3, '#7fa0c4');
+  grad.addColorStop(0.55, '#c3d3dc');
+  grad.addColorStop(0.75, '#e9e6da');
+  grad.addColorStop(1, '#f4ede0');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
-  for (let i = 0; i < 16; i++) {
+  // Soft cloud masses with shaded undersides — a bit of drama and depth
+  // rather than a flat gradient, and denser near the horizon.
+  for (let i = 0; i < 22; i++) {
     const cx = Math.random() * w;
-    const cy = h * 0.12 + Math.random() * h * 0.38;
-    const rx = 35 + Math.random() * 75;
-    const ry = rx * (0.28 + Math.random() * 0.12);
+    const cy = h * 0.1 + Math.random() * h * 0.45;
+    const rx = 45 + Math.random() * 110;
+    const ry = rx * (0.22 + Math.random() * 0.14);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + ry * 0.5, rx, ry * 0.6, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(70,80,95,${0.1 + Math.random() * 0.12})`;
+    ctx.fill();
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
     ctx.fill();
   }
   const texture = new THREE.CanvasTexture(canvas);
@@ -96,8 +103,57 @@ function getGrassTexture() {
   return texture;
 }
 
+// ---------------------------------------------------------------------------
+// Cheap procedural trees — a trunk cylinder plus two overlapping foliage
+// blobs (avoids the "single perfect sphere on a stick" look). Geometries
+// are cached at module scope like the textures above; materials are made
+// fresh per tree so each buildOutdoorGround() call disposes cleanly.
+// ---------------------------------------------------------------------------
+let treeTrunkGeoCache = null, treeFoliageGeoCache = null;
+function getTreeGeos() {
+  if (!treeTrunkGeoCache) {
+    treeTrunkGeoCache = new THREE.CylinderGeometry(0.08, 0.13, 1.1, 6);
+    treeFoliageGeoCache = new THREE.SphereGeometry(1, 8, 6);
+  }
+  return { trunk: treeTrunkGeoCache, foliage: treeFoliageGeoCache };
+}
+
+function addTree(group, x, z, scale = 1) {
+  const { trunk, foliage } = getTreeGeos();
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5b4632, roughness: 0.9 });
+  const foliageMat = new THREE.MeshStandardMaterial({ color: 0x3f7a3f, roughness: 0.85 });
+
+  const trunkMesh = new THREE.Mesh(trunk, trunkMat);
+  trunkMesh.scale.set(scale, scale * 1.4, scale);
+  trunkMesh.position.set(x, 0.55 * scale * 1.4, z);
+  trunkMesh.castShadow = true;
+  trunkMesh.receiveShadow = true;
+  trunkMesh.userData.group = 'object';
+  group.add(trunkMesh);
+
+  const canopyY = 1.1 * scale * 1.4;
+  const foliageMesh = new THREE.Mesh(foliage, foliageMat);
+  foliageMesh.scale.set(0.9 * scale, 1.1 * scale, 0.9 * scale);
+  foliageMesh.position.set(x, canopyY + 0.5 * scale, z);
+  foliageMesh.castShadow = true;
+  foliageMesh.receiveShadow = true;
+  foliageMesh.userData.group = 'object';
+  group.add(foliageMesh);
+
+  const foliageMesh2 = new THREE.Mesh(foliage, foliageMat);
+  foliageMesh2.scale.set(0.6 * scale, 0.7 * scale, 0.6 * scale);
+  foliageMesh2.position.set(x + 0.4 * scale, canopyY + 0.15 * scale, z - 0.25 * scale);
+  foliageMesh2.castShadow = true;
+  foliageMesh2.receiveShadow = true;
+  foliageMesh2.userData.group = 'object';
+  group.add(foliageMesh2);
+}
+
 // A grass field with a paved apron in the middle (yard/driveway), sized to
-// width/depth. Returns a Group; both meshes cast no shadow but receive them.
+// width/depth, and a few trees flanking it. Returns a Group; all children
+// are flat meshes (grass, pave, tree trunks/foliage) so the viewer's
+// `ground.children.forEach(m => { m.geometry?.dispose(); ... })` cleanup
+// reaches every one of them.
 export function buildOutdoorGround(width, depth) {
   const group = new THREE.Group();
 
@@ -124,6 +180,16 @@ export function buildOutdoorGround(width, depth) {
   pave.position.y = 0.004;
   pave.receiveShadow = true;
   group.add(pave);
+
+  const treeScale = Math.min(1.6, Math.max(0.6, Math.min(width, depth) / 14));
+  const margin = Math.min(width, depth) * 0.1;
+  const treeSpots = [
+    [-width / 2 + margin, -depth / 2 + margin, 1.1],
+    [width / 2 - margin, -depth / 2 + margin, 0.95],
+    [-width / 2 + margin * 1.3, depth / 2 - margin * 0.8, 1.0],
+    [width / 2 - margin * 1.3, depth / 2 - margin * 0.8, 1.15],
+  ];
+  treeSpots.forEach(([tx, tz, mul]) => addTree(group, tx, tz, treeScale * mul));
 
   return group;
 }

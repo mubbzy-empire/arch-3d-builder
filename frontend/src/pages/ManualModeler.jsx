@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -7,6 +7,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildManualMeshes, getShadowTexture } from '../three/buildParts';
 import { drawBlueprint } from '../three/blueprint';
 import { analyzeBlueprint } from '../api/client';
+import Drafting2D from '../drafting2d/Drafting2D.jsx';
 
 let idCounter = 0;
 const genId = () => `p${Date.now().toString(36)}${(idCounter++).toString(36)}`;
@@ -17,6 +18,11 @@ const DEFAULTS = {
   doorSize: [0.9, 2.1],
   windowSize: [1.2, 1.2],
   windowSill: 0.9,
+  columnSize: [0.3, 3, 0.3],   // width, height, depth — a typical RC column
+  beamSize: [3, 0.3, 0.3],     // span, height, depth — resize via the panel once placed
+  slabSize: [4, 0.2, 4],       // width, thickness, depth — a floor/roof deck plate
+  zoneSize: [3, 0.02, 3],      // width, (near-zero) thickness, depth — a plan-view area tag
+  roofDefault: { width: 6, depth: 6, ridgeHeight: 1.8, overhang: 0.4 },
 };
 
 const TOOLS = [
@@ -24,16 +30,31 @@ const TOOLS = [
   { id: 'wall', label: 'Wall' },
   { id: 'door', label: 'Door' },
   { id: 'window', label: 'Window' },
-  { id: 'box', label: 'Box' },
+  { id: 'column', label: 'Column' },
+  { id: 'beam', label: 'Beam' },
+  { id: 'slab', label: 'Slab' },
+  { id: 'roof', label: 'Roof' },
+  { id: 'zone', label: 'Zone' },
+  { id: 'box', label: 'Object' },
   { id: 'cylinder', label: 'Cylinder' },
 ];
+
+// 2D plan mode (Drafting2D.jsx) only understands these — every other tool
+// is 3D-only for now. One shared list so the toolbar filter and the
+// auto-switch-to-select effect can't drift apart from each other.
+const TWOD_TOOL_IDS = new Set(['select', 'wall', 'door', 'window']);
 
 function partDisplayName(part, index) {
   if (part.group === 'structure') return part.name || `Wall ${index + 1}`;
   if (part.group === 'door') return part.name || `Door ${index + 1}`;
   if (part.group === 'window') return part.name || `Window ${index + 1}`;
+  if (part.group === 'column') return part.name || `Column ${index + 1}`;
+  if (part.group === 'beam') return part.name || `Beam ${index + 1}`;
+  if (part.group === 'slab') return part.name || `Slab ${index + 1}`;
+  if (part.group === 'roof') return part.name || `Roof ${index + 1}`;
+  if (part.group === 'zone') return part.name || `Zone ${index + 1}`;
   if (part.type === 'cylinder') return part.name || `Cylinder ${index + 1}`;
-  return part.name || `Box ${index + 1}`;
+  return part.name || `Object ${index + 1}`;
 }
 
 export default function ManualModeler() {
@@ -52,6 +73,7 @@ export default function ManualModeler() {
   const [editor, setEditor] = useState({ parts: [], history: [], future: [] });
   const [tool, setTool] = useState('select');
   const [selectedId, setSelectedId] = useState(null);
+  const [viewMode, setViewMode] = useState('3d'); // '3d' | '2d' — same editor.parts drives both
   const [wallDraftActive, setWallDraftActive] = useState(false);
   const [transformMode, setTransformMode] = useState('translate');
   const [title, setTitle] = useState('My design');
@@ -76,6 +98,13 @@ export default function ManualModeler() {
   useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
   useEffect(() => { if (tool !== 'wall') { wallDraftRef.current = null; setWallDraftActive(false); } }, [tool]);
   useEffect(() => {
+    // 2D plan mode only understands wall/door/window (Drafting2D.jsx's
+    // documented scope) — every other tool, including the new structural
+    // ones, is 3D-only for now and gets bounced back to select rather
+    // than silently doing nothing when clicked on the 2D canvas.
+    if (viewMode === '2d' && !TWOD_TOOL_IDS.has(tool)) setTool('select');
+  }, [viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
     transformModeRef.current = transformMode;
     if (transformRef.current) transformRef.current.setMode(transformMode);
   }, [transformMode]);
@@ -86,38 +115,50 @@ export default function ManualModeler() {
   // function is safe to call even from a "stale" closure captured once at
   // mount time (the three.js pointer handlers below) — it never reads
   // `editor` from outer scope, only from the updater argument it receives.
-  const commit = (updater) => {
+  //
+  // These five are wrapped in useCallback specifically because Drafting2D's
+  // pointer-interaction effect lists all of them as dependencies (it has to
+  // — it reads deleteSelected's current closure over `selectedId`, for
+  // one). Left as plain function expressions, every one of them gets a new
+  // reference on every ManualModeler render, which would tear down and
+  // rebuild Drafting2D's ~7 DOM event listeners (mousemove/down/up, wheel,
+  // contextmenu, keydown/up) on every single render — not incorrect
+  // (interaction state lives in refs, not closure locals, so nothing is
+  // lost mid-drag), but needless churn on a component that already
+  // re-renders often. Memoized here, that effect now only re-runs when
+  // something it actually needs (selectedId, floor, defaults) changes.
+  const commit = useCallback((updater) => {
     setEditor(ed => {
       const nextParts = typeof updater === 'function' ? updater(ed.parts) : updater;
       return { parts: nextParts, history: [...ed.history.slice(-49), ed.parts], future: [] };
     });
-  };
-  const undo = () => setEditor(ed => {
+  }, []);
+  const undo = useCallback(() => setEditor(ed => {
     if (!ed.history.length) return ed;
     const prev = ed.history[ed.history.length - 1];
     return { parts: prev, history: ed.history.slice(0, -1), future: [ed.parts, ...ed.future] };
-  });
-  const redo = () => setEditor(ed => {
+  }), []);
+  const redo = useCallback(() => setEditor(ed => {
     if (!ed.future.length) return ed;
     const next = ed.future[0];
     return { parts: next, history: [...ed.history, ed.parts], future: ed.future.slice(1) };
-  });
+  }), []);
 
-  const addPart = (part) => {
+  const addPart = useCallback((part) => {
     commit(prev => [...prev, part]);
     setSelectedId(part.id);
-  };
+  }, [commit]);
 
   const updateSelected = (changes) => {
     if (!selectedId) return;
     commit(prev => prev.map(p => (p.id === selectedId ? { ...p, ...changes } : p)));
   };
 
-  const deleteSelected = () => {
+  const deleteSelected = useCallback(() => {
     if (!selectedId) return;
     commit(prev => prev.filter(p => p.id !== selectedId && p.wallId !== selectedId));
     setSelectedId(null);
-  };
+  }, [selectedId, commit]);
 
   const duplicateSelected = () => {
     if (!selectedPart) return;
@@ -342,6 +383,67 @@ export default function ManualModeler() {
           return;
         }
 
+        if (currentTool === 'column') {
+          const point = groundHit(e);
+          if (!point) return;
+          const [cw, ch, cd] = DEFAULTS.columnSize;
+          addPart({
+            id: genId(), type: 'box', group: 'column', floor: 1,
+            size: [cw, ch, cd], position: [point.x, ch / 2, point.z],
+            material: 'concrete', color: '#9c9990',
+          });
+          return;
+        }
+
+        if (currentTool === 'beam') {
+          const point = groundHit(e);
+          if (!point) return;
+          const [bw, bh, bd] = DEFAULTS.beamSize;
+          addPart({
+            id: genId(), type: 'box', group: 'beam', floor: 1,
+            size: [bw, bh, bd], position: [point.x, DEFAULTS.wallHeight - bh / 2, point.z],
+            material: 'concrete', color: '#8a887f',
+          });
+          return;
+        }
+
+        if (currentTool === 'slab') {
+          const point = groundHit(e);
+          if (!point) return;
+          const [sw, sh, sd] = DEFAULTS.slabSize;
+          addPart({
+            id: genId(), type: 'box', group: 'slab', floor: 1,
+            size: [sw, sh, sd], position: [point.x, sh / 2, point.z],
+            material: 'concrete', color: '#b9b6ad',
+          });
+          return;
+        }
+
+        if (currentTool === 'zone') {
+          const point = groundHit(e);
+          if (!point) return;
+          const [zw, zh, zd] = DEFAULTS.zoneSize;
+          addPart({
+            id: genId(), type: 'box', group: 'zone', floor: 1,
+            size: [zw, zh, zd], position: [point.x, zh / 2, point.z],
+            material: 'plaster', color: '#7cc4ff', name: 'Zone',
+          });
+          return;
+        }
+
+        if (currentTool === 'roof') {
+          const point = groundHit(e);
+          if (!point) return;
+          const { width, depth, ridgeHeight, overhang } = DEFAULTS.roofDefault;
+          addPart({
+            id: genId(), type: 'hip-roof', group: 'roof', floor: 1,
+            width, depth, ridgeHeight, overhang,
+            position: [point.x, DEFAULTS.wallHeight, point.z], rotation: 0,
+            material: 'metal', color: '#5a5f66',
+          });
+          return;
+        }
+
         if (currentTool === 'box' || currentTool === 'cylinder') {
           const point = groundHit(e);
           if (!point) return;
@@ -513,28 +615,36 @@ export default function ManualModeler() {
         </p>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {TOOLS.map(t => (
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div className="view-mode-toggle" style={{ display: 'flex', gap: 4, marginRight: 4 }}>
+          <button className={viewMode === '3d' ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => setViewMode('3d')}>3D View</button>
+          <button className={viewMode === '2d' ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => setViewMode('2d')}>2D Plan</button>
+        </div>
+        {TOOLS.filter(t => viewMode === '3d' || TWOD_TOOL_IDS.has(t.id)).map(t => (
           <button key={t.id} className={tool === t.id ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => setTool(t.id)}>
             {t.label}
           </button>
         ))}
         <button className="btn btn-ghost" onClick={undo} disabled={!editor.history.length}>Undo</button>
         <button className="btn btn-ghost" onClick={redo} disabled={!editor.future.length}>Redo</button>
-        <button
-          className={transformMode === 'translate' ? 'btn btn-primary' : 'btn btn-secondary'}
-          onClick={() => setTransformMode('translate')}
-          title="Move the selected part"
-        >
-          Move
-        </button>
-        <button
-          className={transformMode === 'rotate' ? 'btn btn-primary' : 'btn btn-secondary'}
-          onClick={() => setTransformMode('rotate')}
-          title="Rotate the selected part — works best on freestanding boxes/cylinders, since rotating a wall won't carry its doors and windows along with it"
-        >
-          Rotate
-        </button>
+        {viewMode === '3d' && (
+          <>
+            <button
+              className={transformMode === 'translate' ? 'btn btn-primary' : 'btn btn-secondary'}
+              onClick={() => setTransformMode('translate')}
+              title="Move the selected part"
+            >
+              Move
+            </button>
+            <button
+              className={transformMode === 'rotate' ? 'btn btn-primary' : 'btn btn-secondary'}
+              onClick={() => setTransformMode('rotate')}
+              title="Rotate the selected part — works best on freestanding boxes/cylinders, since rotating a wall won't carry its doors and windows along with it"
+            >
+              Rotate
+            </button>
+          </>
+        )}
       </div>
 
       {buildError ? (
@@ -542,9 +652,27 @@ export default function ManualModeler() {
           <p className="page-sub" style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{buildError}</p>
         </div>
       ) : (
-        <div className="viewer-shell">
+        <div className="viewer-shell" style={{ display: viewMode === '2d' ? 'none' : undefined }}>
           <span className="viewer-tag">{hintText()}</span>
           <div className="viewer-canvas" ref={mountRef} style={{ height: 420 }} />
+        </div>
+      )}
+      {!buildError && viewMode === '2d' && (
+        <div className="viewer-shell" style={{ height: 420, padding: 0, overflow: 'hidden' }}>
+          <Drafting2D
+            parts={editor.parts}
+            tool={tool}
+            selectedId={selectedId}
+            floor={1}
+            defaults={DEFAULTS}
+            onSelect={setSelectedId}
+            addPart={addPart}
+            commit={commit}
+            deleteSelected={deleteSelected}
+            setTool={setTool}
+            undo={undo}
+            redo={redo}
+          />
         </div>
       )}
 
@@ -570,6 +698,18 @@ export default function ManualModeler() {
             {!selectedPart && <p className="page-sub" style={{ fontSize: 12.5 }}>Select an object to edit it.</p>}
             {selectedPart && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {selectedPart.type === 'hip-roof' && (
+                  <>
+                    <label className="spec-label">Footprint width (m)</label>
+                    <input type="number" step="0.1" value={selectedPart.width} onChange={e => updateSelected({ width: Number(e.target.value) })} />
+                    <label className="spec-label">Footprint depth (m)</label>
+                    <input type="number" step="0.1" value={selectedPart.depth} onChange={e => updateSelected({ depth: Number(e.target.value) })} />
+                    <label className="spec-label">Ridge height (m)</label>
+                    <input type="number" step="0.1" value={selectedPart.ridgeHeight} onChange={e => updateSelected({ ridgeHeight: Number(e.target.value) })} />
+                    <label className="spec-label">Overhang (m)</label>
+                    <input type="number" step="0.05" value={selectedPart.overhang} onChange={e => updateSelected({ overhang: Number(e.target.value) })} />
+                  </>
+                )}
                 {selectedPart.size && (
                   <>
                     <label className="spec-label">Width / length (m)</label>
@@ -584,6 +724,7 @@ export default function ManualModeler() {
                 <select value={selectedPart.material || 'wood'} onChange={e => updateSelected({ material: e.target.value })}>
                   <option value="wood">Wood</option>
                   <option value="metal">Metal</option>
+                  <option value="concrete">Concrete</option>
                   <option value="glass">Glass</option>
                   <option value="fabric">Fabric</option>
                 </select>

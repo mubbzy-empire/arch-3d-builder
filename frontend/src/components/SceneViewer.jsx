@@ -6,6 +6,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { GROUP_LABELS, getShadowTexture, buildBuildingMeshes } from '../three/buildParts';
 import { applySkyBackground, buildOutdoorGround, addDaylight, buildCompoundWall } from '../three/skyEnvironment';
+import { buildBuildingGroup, generateBuildingFromBrief } from '../three/architecture';
 import PartInfoPanel from './PartInfoPanel';
 
 // Renders an entire estate/compound: a ground plane sized to the site, a
@@ -103,6 +104,70 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
       const compound = buildCompoundWall(siteWidth, siteDepth, { gateWidth: Math.min(6, siteWidth * 0.25) });
       scene.add(compound);
 
+      // Real subdivision geometry — an actual paved road strip per row and
+      // a plot boundary line per building, built from the master-planning
+      // data layoutEstate() now returns (backend/services/aiService.js).
+      // `site?.plots`/`site?.roads` are optional and checked defensively:
+      // an estate saved before this feature existed has neither field in
+      // its stored site_json, and that's a real, reachable case (any
+      // project created and persisted earlier), not a hypothetical one —
+      // it must render exactly as before (just the compound + grid, no
+      // roads/plot lines) rather than throw on `undefined.map`.
+      const roadMat = new THREE.MeshStandardMaterial({ color: '#3a3d42', roughness: 0.95 });
+      const roadMeshes = [];
+      (site?.roads || []).forEach((road) => {
+        const [[x1, z1], [x2, z2]] = road.points;
+        const length = Math.hypot(x2 - x1, z2 - z1);
+        if (length < 0.1) return;
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(length, 0.06, road.width), roadMat);
+        strip.position.set((x1 + x2) / 2, 0.02, (z1 + z2) / 2);
+        // Same rotation convention wallSystem.js already uses for every
+        // wall box in this project (rotation.y = atan2(dx, dz), geometry's
+        // first BoxGeometry argument running along local X) — reused
+        // rather than re-derived, since it's already the established,
+        // working convention throughout this codebase.
+        strip.rotation.y = Math.atan2(x2 - x1, z2 - z1);
+        strip.receiveShadow = true;
+        scene.add(strip);
+        roadMeshes.push(strip);
+      });
+
+      const plotLineMat = new THREE.LineDashedMaterial({ color: '#5a6570', dashSize: 0.6, gapSize: 0.4, transparent: true, opacity: 0.6 });
+      const plotLines = [];
+      (site?.plots || []).forEach((plot) => {
+        const pts = plot.boundary.map(([x, z]) => new THREE.Vector3(x, 0.03, z));
+        pts.push(pts[0].clone()); // close the loop
+        const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
+        const line = new THREE.Line(lineGeo, plotLineMat);
+        line.computeLineDistances(); // required for LineDashedMaterial to render dashes at all
+        scene.add(line);
+        plotLines.push(line);
+      });
+
+      // Reserved green/amenity space (estatePlanner.js's road-spine layout
+      // terminates in one, the way a real cul-de-sac ends in a turning
+      // circle/park) — a simple raised grass disc-like pad plus a low
+      // paved rim, distinct enough from the surrounding ground to read as
+      // a deliberate shared space rather than just leftover site area.
+      // Optional and checked defensively for the same reason plots/roads
+      // are: a row-grid-laid-out estate (or one saved before this field
+      // existed) has no greenSpace at all.
+      let greenSpaceMesh = null, greenSpaceRimMesh = null;
+      if (site?.greenSpace) {
+        const gs = site.greenSpace;
+        const rimGeo = new THREE.CylinderGeometry(gs.width / 2 + 0.3, gs.width / 2 + 0.3, 0.08, 24);
+        greenSpaceRimMesh = new THREE.Mesh(rimGeo, new THREE.MeshStandardMaterial({ color: '#8a8f96', roughness: 0.9 }));
+        greenSpaceRimMesh.position.set(gs.x, 0.04, gs.z);
+        greenSpaceRimMesh.receiveShadow = true;
+        scene.add(greenSpaceRimMesh);
+
+        const padGeo = new THREE.CylinderGeometry(gs.width / 2, gs.depth / 2, 0.1, 24);
+        greenSpaceMesh = new THREE.Mesh(padGeo, new THREE.MeshStandardMaterial({ color: '#4c7a3f', roughness: 1 }));
+        greenSpaceMesh.position.set(gs.x, 0.09, gs.z);
+        greenSpaceMesh.receiveShadow = true;
+        scene.add(greenSpaceMesh);
+      }
+
       // Plot/road grid — a technical aid for "Edit layout" mode, hidden the
       // rest of the time so it doesn't sit on top of the paved/grass ground
       // and break the realism of the default view.
@@ -125,8 +190,24 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         bGroup.rotation.y = b.rotation || 0;
         bGroup.userData.originalPosition = bGroup.position.clone();
         bGroup.userData.originalRotationY = bGroup.rotation.y;
-        const meshes = buildBuildingMeshes(b.modelSpec?.parts || []);
-        meshes.forEach(m => bGroup.add(m));
+        // Phase 3: a building generated through the new architecture
+        // engine carries modelSpec.designBrief instead of modelSpec.parts —
+        // same buildBuildingGroup()/generateBuildingFromBrief() pair the
+        // single-building viewer uses, so an estate house is a real
+        // building with its own footprint/floors/roof, not a box.
+        let meshes;
+        if (b.modelSpec?.designBrief) {
+          const building = generateBuildingFromBrief(b.modelSpec.designBrief);
+          const { group: archGroup, report } = buildBuildingGroup(building);
+          if (report.warnings.length) console.warn(`[architecture engine] ${b.name}:`, report.warnings);
+          if (!report.valid) console.error(`[architecture engine] ${b.name}:`, report.errors);
+          bGroup.add(archGroup);
+          meshes = [];
+          archGroup.traverse((obj) => { if (obj.isMesh) meshes.push(obj); });
+        } else {
+          meshes = buildBuildingMeshes(b.modelSpec?.parts || []);
+          meshes.forEach(m => bGroup.add(m));
+        }
         bGroup.userData.buildingId = b.id;
         bGroup.userData.buildingName = b.name;
         root.add(bGroup);
@@ -187,11 +268,21 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         pointerNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         pointerNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
         raycaster.setFromCamera(pointerNdc, camera);
-        const allMeshes = buildingGroups.flatMap(g => g.children);
-        const hits = raycaster.intersectObjects(allMeshes, false);
+        // Recursive: a legacy-pipeline building's meshes sit directly under
+        // its group, but an architecture-engine building's meshes are
+        // several levels deep (group -> levels -> walls -> mesh), so a
+        // direct-children-only test (the previous `g.children` approach)
+        // silently missed every one of them — clicking anywhere on a new-
+        // engine estate building never registered a hit.
+        const hits = raycaster.intersectObjects(buildingGroups, true);
         if (hits.length) {
           const target = hits[0].object;
-          const parentGroup = target.parent;
+          // Walk up to whichever ancestor is the building's own top-level
+          // group (tagged with buildingId) — could be immediate for a
+          // legacy building, or several levels up for a new-engine one.
+          let parentGroup = target;
+          while (parentGroup && parentGroup.userData.buildingId == null) parentGroup = parentGroup.parent;
+          if (!parentGroup) return;
           const label = GROUP_LABELS[target.userData.group] || target.userData.group;
           setActiveId(parentGroup.userData.buildingId);
           setSelectedInfo({
@@ -200,6 +291,8 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
             room: target.userData.room || null,
             floor: target.userData.floor ?? 1,
             material: target.userData.material || null,
+            assembly: target.userData.assembly || null,
+            assemblyLayers: target.userData.assemblyLayers || null,
             buildingName: parentGroup.userData.buildingName,
           });
           if (layoutEditModeRef.current) {
@@ -245,7 +338,12 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         scene.environment?.dispose?.();
         ground.children.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); });
         compound.traverse(m => { m.geometry?.dispose(); m.material?.dispose(); });
-        buildingGroups.forEach(g => g.children.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); }));
+        roadMeshes.forEach(m => { m.geometry?.dispose(); m.material?.dispose(); });
+        plotLines.forEach(l => l.geometry?.dispose());
+        plotLineMat.dispose();
+        if (greenSpaceMesh) { greenSpaceMesh.geometry?.dispose(); greenSpaceMesh.material?.dispose(); }
+        if (greenSpaceRimMesh) { greenSpaceRimMesh.geometry?.dispose(); greenSpaceRimMesh.material?.dispose(); }
+        buildingGroups.forEach(g => g.traverse(m => { m.geometry?.dispose?.(); m.material?.dispose?.(); }));
         if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
       };
     } catch (err) {
@@ -363,9 +461,11 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
         <div className="panel bracket">
           <div className="section-head"><h3>Scene Explorer</h3><span className="count">{(buildings || []).length} buildings</span></div>
           <div className="scene-explorer">
-            {(buildings || []).map(b => (
+            {(buildings || []).map((b, i) => (
               <div key={b.id} className={`scene-explorer-item${activeId === b.id ? ' active' : ''}`} onClick={() => focusBuilding(b)} role="button">
-                <span className="name">{b.name}</span>
+                <span className="name">
+                  {site?.plots?.[i]?.plotNumber ? `${site.plots[i].plotNumber} · ${b.name}` : b.name}
+                </span>
                 <button
                   className={`toggle-visible${hiddenIds[b.id] ? ' hidden' : ''}`}
                   onClick={(e) => { e.stopPropagation(); setHiddenIds(h => ({ ...h, [b.id]: !h[b.id] })); }}
@@ -377,7 +477,11 @@ export default function SceneViewer({ site, buildings, onFocusBuilding }) {
             ))}
           </div>
           <p className="page-sub" style={{ marginTop: 12, fontSize: 12 }}>
-            Site: {Math.round(siteWidth)}m × {Math.round(siteDepth)}m · {site?.cols || 1} × {site?.rows || 1} grid with road access between plots.
+            {site?.plots?.length ? (
+              <>Site: {Math.round(siteWidth)}m × {Math.round(siteDepth)}m · {site.plots.length} plots across {site.rows} row{site.rows === 1 ? '' : 's'}, each with its own road frontage.</>
+            ) : (
+              <>Site: {Math.round(siteWidth)}m × {Math.round(siteDepth)}m · {site?.cols || 1} × {site?.rows || 1} grid with road access between plots.</>
+            )}
           </p>
         </div>
       </div>
